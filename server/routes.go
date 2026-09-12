@@ -96,12 +96,13 @@ var useClient2 = experimentEnabled("client2")
 var mode string = gin.DebugMode
 
 type Server struct {
-	addr          net.Addr
-	sched         *Scheduler
-	defaultNumCtx int
-	requestLogger *inferenceRequestLogger
-	modelCaches   *modelCaches
-	agentRunner   agentRunner
+	addr              net.Addr
+	sched             *Scheduler
+	defaultNumCtx     int
+	requestLogger     *inferenceRequestLogger
+	modelCaches       *modelCaches
+	agentRunner       agentRunner
+	agentSessionStore sessionStore
 }
 
 func init() {
@@ -1913,6 +1914,10 @@ func (s *Server) GenerateRoutes() (http.Handler, error) {
 	r.POST("/api/generate", s.withInferenceRequestLogging("/api/generate", s.GenerateHandler)...)
 	r.POST("/api/chat", s.withInferenceRequestLogging("/api/chat", s.ChatHandler)...)
 	r.POST("/api/agent/run", s.AgentRunHandler)
+	r.POST("/api/agent/session", s.AgentSessionCreateHandler)
+	r.GET("/api/agent/session/:id", s.AgentSessionGetHandler)
+	r.GET("/api/agent/session/:id/events", s.AgentSessionEventsHandler)
+	r.GET("/api/agent/session/:id/diff", s.AgentSessionDiffHandler)
 	r.POST("/api/embed", s.EmbedHandler)
 	r.POST("/api/embeddings", s.EmbeddingsHandler)
 

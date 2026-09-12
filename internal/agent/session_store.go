@@ -31,13 +31,17 @@ const (
 )
 
 type SessionSnapshot struct {
-	ID        string       `json:"id"`
-	Model     string       `json:"model"`
-	Workspace string       `json:"workspace"`
-	Task      string       `json:"task"`
-	State     SessionState `json:"state"`
-	CreatedAt time.Time    `json:"created_at"`
-	UpdatedAt time.Time    `json:"updated_at"`
+	ID                  string               `json:"id"`
+	Model               string               `json:"model"`
+	Workspace           string               `json:"workspace"`
+	Task                string               `json:"task"`
+	State               SessionState         `json:"state"`
+	CreatedAt           time.Time            `json:"created_at"`
+	UpdatedAt           time.Time            `json:"updated_at"`
+	StepsExecuted       int                  `json:"steps_executed,omitempty"`
+	ChangedFiles        []string             `json:"changed_files,omitempty"`
+	VerificationResults []VerificationResult `json:"verification_results,omitempty"`
+	FinalSummary        string               `json:"final_summary,omitempty"`
 }
 
 type SessionEvent struct {
