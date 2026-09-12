@@ -103,6 +103,7 @@ type Server struct {
 	modelCaches       *modelCaches
 	agentRunner       agentRunner
 	agentSessionStore sessionStore
+	agentSessionCtl   agentSessionControl
 }
 
 func init() {
@@ -1915,6 +1916,8 @@ func (s *Server) GenerateRoutes() (http.Handler, error) {
 	r.POST("/api/chat", s.withInferenceRequestLogging("/api/chat", s.ChatHandler)...)
 	r.POST("/api/agent/run", s.AgentRunHandler)
 	r.POST("/api/agent/session", s.AgentSessionCreateHandler)
+	r.POST("/api/agent/session/:id/continue", s.AgentSessionContinueHandler)
+	r.POST("/api/agent/session/:id/cancel", s.AgentSessionCancelHandler)
 	r.GET("/api/agent/session/:id", s.AgentSessionGetHandler)
 	r.GET("/api/agent/session/:id/events", s.AgentSessionEventsHandler)
 	r.GET("/api/agent/session/:id/diff", s.AgentSessionDiffHandler)

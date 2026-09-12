@@ -15,6 +15,7 @@ const (
 )
 
 const (
+	EventSessionContinued   SessionEventType = "session_continued"
 	EventModelTurn          SessionEventType = "model_turn"
 	EventToolCall           SessionEventType = "tool_call"
 	EventToolResult         SessionEventType = "tool_result"

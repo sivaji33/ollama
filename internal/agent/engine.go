@@ -21,7 +21,12 @@ const toolRetryPrompt = `Your previous response did not execute a tool. This tas
 func NewEngine(chat ChatClient) *Engine { return &Engine{chat: chat} }
 
 func (e *Engine) Run(ctx context.Context, request RunRequest) (RunResult, error) {
-	result := RunResult{SessionID: uuid.NewString(), Status: StatusFailed, ToolCalls: []ToolCallRecord{}, ChangedFiles: []string{}, VerificationResults: []VerificationResult{}, StepEvents: []StepEvent{}}
+	sessionID := strings.TrimSpace(request.SessionID)
+	if sessionID == "" {
+		sessionID = uuid.NewString()
+	}
+
+	result := RunResult{SessionID: sessionID, Status: StatusFailed, ToolCalls: []ToolCallRecord{}, ChangedFiles: []string{}, VerificationResults: []VerificationResult{}, StepEvents: []StepEvent{}}
 	if e == nil || e.chat == nil {
 		return result, errors.New("agent requires a chat client")
 	}

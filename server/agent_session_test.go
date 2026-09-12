@@ -102,7 +102,7 @@ func TestAgentSessionCreateUsesDefaultAgentModelAndPersistsResult(t *testing.T) 
 		)
 	}
 
-	snapshot, err := store.Load("session-http-001")
+	snapshot, err := store.Load(runner.request.SessionID)
 	if err != nil {
 		t.Fatalf("Load persisted session: %v", err)
 	}
@@ -257,7 +257,7 @@ func TestAgentSessionReadEndpointsSurviveFreshStore(t *testing.T) {
 		getRecorder,
 		httptest.NewRequest(
 			http.MethodGet,
-			"/api/agent/session/session-read-001",
+			"/api/agent/session/"+runner.request.SessionID,
 			nil,
 		),
 	)
@@ -275,7 +275,7 @@ func TestAgentSessionReadEndpointsSurviveFreshStore(t *testing.T) {
 		t.Fatalf("decode snapshot: %v", err)
 	}
 
-	if snapshot.ID != "session-read-001" {
+	if snapshot.ID != runner.request.SessionID {
 		t.Fatalf("snapshot ID = %q", snapshot.ID)
 	}
 
@@ -284,7 +284,7 @@ func TestAgentSessionReadEndpointsSurviveFreshStore(t *testing.T) {
 		eventsRecorder,
 		httptest.NewRequest(
 			http.MethodGet,
-			"/api/agent/session/session-read-001/events",
+			"/api/agent/session/"+runner.request.SessionID+"/events",
 			nil,
 		),
 	)
@@ -302,7 +302,7 @@ func TestAgentSessionReadEndpointsSurviveFreshStore(t *testing.T) {
 		diffRecorder,
 		httptest.NewRequest(
 			http.MethodGet,
-			"/api/agent/session/session-read-001/diff",
+			"/api/agent/session/"+runner.request.SessionID+"/diff",
 			nil,
 		),
 	)

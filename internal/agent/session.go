@@ -22,6 +22,7 @@ const (
 )
 
 type RunRequest struct {
+	SessionID string   `json:"session_id,omitempty"`
 	Model     string   `json:"model"`
 	Workspace string   `json:"workspace"`
 	Task      string   `json:"task"`

@@ -1,6 +1,8 @@
 package server
 
 import (
+	"context"
+	"fmt"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -8,6 +10,7 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/google/uuid"
 	agentpkg "github.com/ollama/ollama/internal/agent"
 )
 
@@ -59,30 +62,9 @@ func (s *Server) AgentSessionCreateHandler(c *gin.Context) {
 		request.Model = agentpkg.DefaultAgentModel
 	}
 
-	runner := s.agentRunner
-	if runner == nil {
-		runner = agentpkg.NewEngine(serverChatClient{server: s})
-	}
-
-	started := time.Now().UTC()
-
-	result, runErr := runner.Run(c.Request.Context(), request)
-
-	if strings.TrimSpace(result.SessionID) == "" {
-		if runErr != nil {
-			c.JSON(
-				http.StatusInternalServerError,
-				gin.H{"error": runErr.Error()},
-			)
-			return
-		}
-
-		c.JSON(
-			http.StatusInternalServerError,
-			gin.H{"error": "agent returned an empty session id"},
-		)
-		return
-	}
+	// The server owns session identity. It must exist before Run starts
+	// so cancellation and progress can address the active operation.
+	request.SessionID = uuid.NewString()
 
 	store, err := s.resolveAgentSessionStore()
 	if err != nil {
@@ -93,25 +75,16 @@ func (s *Server) AgentSessionCreateHandler(c *gin.Context) {
 		return
 	}
 
-	state := agentpkg.SessionStateFailed
-	if result.Status == agentpkg.StatusSuccess {
-		state = agentpkg.SessionStateVerified
-	}
-
-	finished := time.Now().UTC()
+	started := time.Now().UTC()
 
 	snapshot := agentpkg.SessionSnapshot{
-		ID:                  result.SessionID,
-		Model:               request.Model,
-		Workspace:           request.Workspace,
-		Task:                request.Task,
-		State:               state,
-		CreatedAt:           started,
-		UpdatedAt:           finished,
-		StepsExecuted:       result.StepsExecuted,
-		ChangedFiles:        result.ChangedFiles,
-		VerificationResults: result.VerificationResults,
-		FinalSummary:        result.FinalSummary,
+		ID:        request.SessionID,
+		Model:     request.Model,
+		Workspace: request.Workspace,
+		Task:      request.Task,
+		State:     agentpkg.SessionStateRunning,
+		CreatedAt: started,
+		UpdatedAt: started,
 	}
 
 	if err := store.Save(snapshot); err != nil {
@@ -123,7 +96,7 @@ func (s *Server) AgentSessionCreateHandler(c *gin.Context) {
 	}
 
 	if err := store.AppendEvent(
-		snapshot.ID,
+		request.SessionID,
 		agentpkg.SessionEvent{
 			Type:      agentpkg.EventSessionCreated,
 			Timestamp: started,
@@ -137,36 +110,47 @@ func (s *Server) AgentSessionCreateHandler(c *gin.Context) {
 		return
 	}
 
-	if result.GitDiff != "" {
-		if err := store.SaveDiff(snapshot.ID, result.GitDiff); err != nil {
-			c.JSON(
-				http.StatusInternalServerError,
-				gin.H{"error": err.Error()},
-			)
-			return
-		}
+	runner := s.agentRunner
+	if runner == nil {
+		runner = agentpkg.NewEngine(serverChatClient{server: s})
 	}
 
-	finalEvent := agentpkg.EventFailed
-	finalMessage := "session failed"
+	runContext, cancel := context.WithCancel(c.Request.Context())
 
-	if state == agentpkg.SessionStateVerified {
-		finalEvent = agentpkg.EventCompleted
-		finalMessage = "session completed"
+	if !s.agentSessionCtl.register(request.SessionID, cancel) {
+		cancel()
+		c.JSON(
+			http.StatusConflict,
+			gin.H{"error": "session is already active"},
+		)
+		return
 	}
 
-	if err := store.AppendEvent(
-		snapshot.ID,
-		agentpkg.SessionEvent{
-			Type:      finalEvent,
-			Timestamp: finished,
-			Message:   finalMessage,
-		},
-	); err != nil {
+	result, runErr := runner.Run(runContext, request)
+
+	// A runner cannot change the server-owned session identity.
+	result.SessionID = request.SessionID
+
+	cancelled, finishErr := s.finishAgentSession(
+		store,
+		request,
+		result,
+		runErr,
+	)
+	cancel()
+
+	if finishErr != nil {
 		c.JSON(
 			http.StatusInternalServerError,
-			gin.H{"error": err.Error()},
+			gin.H{"error": finishErr.Error()},
 		)
+		return
+	}
+
+	if cancelled {
+		result.Status = agentpkg.StatusFailed
+		result.FinalSummary = "session cancelled"
+		c.JSON(http.StatusOK, result)
 		return
 	}
 
@@ -182,6 +166,336 @@ func (s *Server) AgentSessionCreateHandler(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, result)
+}
+
+func (s *Server) AgentSessionContinueHandler(c *gin.Context) {
+	store, err := s.resolveAgentSessionStore()
+	if err != nil {
+		c.JSON(
+			http.StatusInternalServerError,
+			gin.H{"error": err.Error()},
+		)
+		return
+	}
+
+	sessionID := c.Param("id")
+
+	snapshot, err := store.Load(sessionID)
+	if err != nil {
+		c.JSON(
+			http.StatusNotFound,
+			gin.H{"error": err.Error()},
+		)
+		return
+	}
+
+	var request agentpkg.RunRequest
+	if err := c.ShouldBindJSON(&request); err != nil {
+		c.AbortWithStatusJSON(
+			http.StatusBadRequest,
+			gin.H{"error": err.Error()},
+		)
+		return
+	}
+
+	if strings.TrimSpace(request.Task) == "" {
+		c.AbortWithStatusJSON(
+			http.StatusBadRequest,
+			gin.H{"error": "task is required"},
+		)
+		return
+	}
+
+	request.SessionID = snapshot.ID
+	request.Model = snapshot.Model
+	request.Workspace = snapshot.Workspace
+
+	runContext, cancel := context.WithCancel(c.Request.Context())
+
+	ctl := &s.agentSessionCtl
+	ctl.mu.Lock()
+
+	if ctl.cancels == nil {
+		ctl.cancels = make(map[string]context.CancelFunc)
+	}
+
+	if _, active := ctl.cancels[sessionID]; active {
+		ctl.mu.Unlock()
+		cancel()
+
+		c.JSON(
+			http.StatusConflict,
+			gin.H{"error": "session is already active"},
+		)
+		return
+	}
+
+	snapshot.State = agentpkg.SessionStateRunning
+	snapshot.Task = request.Task
+	snapshot.UpdatedAt = time.Now().UTC()
+	snapshot.StepsExecuted = 0
+	snapshot.ChangedFiles = nil
+	snapshot.VerificationResults = nil
+	snapshot.FinalSummary = ""
+
+	if err := store.Save(snapshot); err != nil {
+		ctl.mu.Unlock()
+		cancel()
+
+		c.JSON(
+			http.StatusInternalServerError,
+			gin.H{"error": err.Error()},
+		)
+		return
+	}
+
+	if err := store.AppendEvent(
+		sessionID,
+		agentpkg.SessionEvent{
+			Type:      agentpkg.EventSessionContinued,
+			Timestamp: snapshot.UpdatedAt,
+			Message:   "session continued",
+		},
+	); err != nil {
+		ctl.mu.Unlock()
+		cancel()
+
+		c.JSON(
+			http.StatusInternalServerError,
+			gin.H{"error": err.Error()},
+		)
+		return
+	}
+
+	ctl.cancels[sessionID] = cancel
+	ctl.mu.Unlock()
+
+	runner := s.agentRunner
+	if runner == nil {
+		runner = agentpkg.NewEngine(serverChatClient{server: s})
+	}
+
+	result, runErr := runner.Run(runContext, request)
+
+	result.SessionID = sessionID
+
+	cancelled, finishErr := s.finishAgentSession(
+		store,
+		request,
+		result,
+		runErr,
+	)
+	cancel()
+
+	if finishErr != nil {
+		c.JSON(
+			http.StatusInternalServerError,
+			gin.H{"error": finishErr.Error()},
+		)
+		return
+	}
+
+	if cancelled {
+		result.Status = agentpkg.StatusFailed
+		result.FinalSummary = "session cancelled"
+		c.JSON(http.StatusOK, result)
+		return
+	}
+
+	if runErr != nil {
+		c.JSON(
+			http.StatusInternalServerError,
+			gin.H{
+				"error":  runErr.Error(),
+				"result": result,
+			},
+		)
+		return
+	}
+
+	c.JSON(http.StatusOK, result)
+}
+
+func (s *Server) AgentSessionCancelHandler(c *gin.Context) {
+	store, err := s.resolveAgentSessionStore()
+	if err != nil {
+		c.JSON(
+			http.StatusInternalServerError,
+			gin.H{"error": err.Error()},
+		)
+		return
+	}
+
+	sessionID := c.Param("id")
+	ctl := &s.agentSessionCtl
+
+	ctl.mu.Lock()
+
+	cancel, active := ctl.cancels[sessionID]
+	if !active {
+		snapshot, loadErr := store.Load(sessionID)
+		ctl.mu.Unlock()
+
+		if loadErr != nil {
+			c.JSON(
+				http.StatusNotFound,
+				gin.H{"error": loadErr.Error()},
+			)
+			return
+		}
+
+		if snapshot.State == agentpkg.SessionStateCancelled {
+			c.JSON(http.StatusOK, snapshot)
+			return
+		}
+
+		c.JSON(
+			http.StatusConflict,
+			gin.H{"error": "session is not active"},
+		)
+		return
+	}
+
+	snapshot, err := store.Load(sessionID)
+	if err != nil {
+		ctl.mu.Unlock()
+
+		c.JSON(
+			http.StatusNotFound,
+			gin.H{"error": err.Error()},
+		)
+		return
+	}
+
+	now := time.Now().UTC()
+
+	if err := store.AppendEvent(
+		sessionID,
+		agentpkg.SessionEvent{
+			Type:      agentpkg.EventCancelRequested,
+			Timestamp: now,
+			Message:   "cancellation requested",
+		},
+	); err != nil {
+		ctl.mu.Unlock()
+
+		c.JSON(
+			http.StatusInternalServerError,
+			gin.H{"error": err.Error()},
+		)
+		return
+	}
+
+	snapshot.State = agentpkg.SessionStateCancelled
+	snapshot.UpdatedAt = now
+	snapshot.FinalSummary = "session cancelled"
+
+	if err := store.Save(snapshot); err != nil {
+		ctl.mu.Unlock()
+
+		c.JSON(
+			http.StatusInternalServerError,
+			gin.H{"error": err.Error()},
+		)
+		return
+	}
+
+	if err := store.AppendEvent(
+		sessionID,
+		agentpkg.SessionEvent{
+			Type:      agentpkg.EventCancelled,
+			Timestamp: now,
+			Message:   "session cancelled",
+		},
+	); err != nil {
+		ctl.mu.Unlock()
+
+		c.JSON(
+			http.StatusInternalServerError,
+			gin.H{"error": err.Error()},
+		)
+		return
+	}
+
+	// Persist CANCELLED before signalling the execution context.
+	// finishAgentSession uses this same mutex, so a late success
+	// can never race past the persisted cancellation.
+	cancel()
+
+	ctl.mu.Unlock()
+
+	c.JSON(http.StatusOK, snapshot)
+}
+
+func (s *Server) finishAgentSession(
+	store sessionStore,
+	request agentpkg.RunRequest,
+	result agentpkg.RunResult,
+	runErr error,
+) (bool, error) {
+	ctl := &s.agentSessionCtl
+
+	ctl.mu.Lock()
+	defer ctl.mu.Unlock()
+
+	if ctl.cancels != nil {
+		delete(ctl.cancels, request.SessionID)
+	}
+
+	snapshot, err := store.Load(request.SessionID)
+	if err != nil {
+		return false, fmt.Errorf("load session before finalization: %w", err)
+	}
+
+	// Cancellation is terminal and wins over any late runner response.
+	if snapshot.State == agentpkg.SessionStateCancelled {
+		return true, nil
+	}
+
+	now := time.Now().UTC()
+
+	snapshot.Model = request.Model
+	snapshot.Workspace = request.Workspace
+	snapshot.Task = request.Task
+	snapshot.UpdatedAt = now
+	snapshot.StepsExecuted = result.StepsExecuted
+	snapshot.ChangedFiles = result.ChangedFiles
+	snapshot.VerificationResults = result.VerificationResults
+	snapshot.FinalSummary = result.FinalSummary
+
+	eventType := agentpkg.EventFailed
+	eventMessage := "session failed"
+	snapshot.State = agentpkg.SessionStateFailed
+
+	if runErr == nil && result.Status == agentpkg.StatusSuccess {
+		snapshot.State = agentpkg.SessionStateVerified
+		eventType = agentpkg.EventCompleted
+		eventMessage = "session completed"
+	}
+
+	if err := store.SaveDiff(
+		request.SessionID,
+		result.GitDiff,
+	); err != nil {
+		return false, fmt.Errorf("save final diff: %w", err)
+	}
+
+	if err := store.Save(snapshot); err != nil {
+		return false, fmt.Errorf("save final session: %w", err)
+	}
+
+	if err := store.AppendEvent(
+		request.SessionID,
+		agentpkg.SessionEvent{
+			Type:      eventType,
+			Timestamp: now,
+			Message:   eventMessage,
+		},
+	); err != nil {
+		return false, fmt.Errorf("append final event: %w", err)
+	}
+
+	return false, nil
 }
 
 func (s *Server) AgentSessionGetHandler(c *gin.Context) {
