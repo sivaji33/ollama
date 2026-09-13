@@ -22,12 +22,13 @@ const (
 )
 
 type RunRequest struct {
-	SessionID string   `json:"session_id,omitempty"`
-	Model     string   `json:"model"`
-	Workspace string   `json:"workspace"`
-	Task      string   `json:"task"`
-	MaxSteps  int      `json:"max_steps,omitempty"`
-	Verify    []string `json:"verify,omitempty"`
+	SessionID        string                   `json:"session_id,omitempty"`
+	Model            string                   `json:"model"`
+	Workspace        string                   `json:"workspace"`
+	Task             string                   `json:"task"`
+	MaxSteps         int                      `json:"max_steps,omitempty"`
+	Verify           []string                 `json:"verify,omitempty"`
+	OnLifecycleEvent func(SessionEvent) error `json:"-"`
 }
 
 type ToolCallRecord struct {

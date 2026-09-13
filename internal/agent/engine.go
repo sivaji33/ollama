@@ -102,13 +102,20 @@ func (e *Engine) Run(ctx context.Context, request RunRequest) (RunResult, error)
 							result.StepEvents = append(result.StepEvents, StepEvent{Step: step, Kind: StepEditDetected, ToolName: call.Function.Name})
 
 							if repairPending {
-								result.LifecycleEvents = append(
-									result.LifecycleEvents,
+								if err := emitLifecycleEvent(
+									&result,
+									request,
 									newLifecycleEvent(
 										EventRepairCompleted,
 										"repair completed",
 									),
-								)
+								); err != nil {
+									return result, fmt.Errorf(
+										"publish lifecycle event %q: %w",
+										EventRepairCompleted,
+										err,
+									)
+								}
 								repairPending = false
 							}
 						}
@@ -137,26 +144,40 @@ func (e *Engine) Run(ctx context.Context, request RunRequest) (RunResult, error)
 			result.FinalSummary = "maximum agent steps reached without a meaningful source diff"
 			return result, nil
 		}
-		result.LifecycleEvents = append(
-			result.LifecycleEvents,
+		if err := emitLifecycleEvent(
+			&result,
+			request,
 			newLifecycleEvent(
 				EventVerificationStart,
 				"verification started",
 			),
-		)
+		); err != nil {
+			return result, fmt.Errorf(
+				"publish lifecycle event %q: %w",
+				EventVerificationStart,
+				err,
+			)
+		}
 
 		verification, passed := verifyAll(ctx, workspace, request.Verify)
 		result.VerificationResults = verification
 		passedCopy := passed
 		result.StepEvents = append(result.StepEvents, StepEvent{Step: step, Kind: StepVerification, Passed: &passedCopy})
 		if passed {
-			result.LifecycleEvents = append(
-				result.LifecycleEvents,
+			if err := emitLifecycleEvent(
+				&result,
+				request,
 				newLifecycleEvent(
 					EventVerificationPassed,
 					"verification passed",
 				),
-			)
+			); err != nil {
+				return result, fmt.Errorf(
+					"publish lifecycle event %q: %w",
+					EventVerificationPassed,
+					err,
+				)
+			}
 
 			result.Status = StatusSuccess
 			result.FinalSummary = strings.TrimSpace(response.Message.Content)
@@ -165,13 +186,20 @@ func (e *Engine) Run(ctx context.Context, request RunRequest) (RunResult, error)
 			}
 			return result, nil
 		}
-		result.LifecycleEvents = append(
-			result.LifecycleEvents,
+		if err := emitLifecycleEvent(
+			&result,
+			request,
 			newLifecycleEvent(
 				EventVerificationFailed,
 				"verification failed",
 			),
-		)
+		); err != nil {
+			return result, fmt.Errorf(
+				"publish lifecycle event %q: %w",
+				EventVerificationFailed,
+				err,
+			)
+		}
 
 		if repairs >= MaxRepairAttempts {
 			result.FinalSummary = "verification failed after maximum repair attempts"
@@ -179,14 +207,20 @@ func (e *Engine) Run(ctx context.Context, request RunRequest) (RunResult, error)
 		}
 		repairs++
 		repairPending = true
-
-		result.LifecycleEvents = append(
-			result.LifecycleEvents,
+		if err := emitLifecycleEvent(
+			&result,
+			request,
 			newLifecycleEvent(
 				EventRepairStarted,
 				"repair started",
 			),
-		)
+		); err != nil {
+			return result, fmt.Errorf(
+				"publish lifecycle event %q: %w",
+				EventRepairStarted,
+				err,
+			)
+		}
 		result.StepEvents = append(result.StepEvents, StepEvent{Step: step, Kind: StepRepair})
 		encoded, _ := json.Marshal(verification)
 		messages = append(messages, api.Message{Role: "user", Content: fmt.Sprintf("Verification failed (repair attempt %d of %d). Diagnose, edit with tools, inspect the diff, and retry. Results: %s", repairs, MaxRepairAttempts, encoded)})
@@ -195,6 +229,23 @@ func (e *Engine) Run(ctx context.Context, request RunRequest) (RunResult, error)
 	diff, changed, _ := workspace.GitDiff(ctx)
 	result.GitDiff, result.ChangedFiles = diff, changed
 	return result, nil
+}
+
+func emitLifecycleEvent(
+	result *RunResult,
+	request RunRequest,
+	event SessionEvent,
+) error {
+	result.LifecycleEvents = append(
+		result.LifecycleEvents,
+		event,
+	)
+
+	if request.OnLifecycleEvent != nil {
+		return request.OnLifecycleEvent(event)
+	}
+
+	return nil
 }
 
 func newLifecycleEvent(
