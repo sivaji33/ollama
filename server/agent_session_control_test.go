@@ -113,6 +113,10 @@ func TestAgentSessionContinueReusesPersistentSessionIdentity(t *testing.T) {
 		)
 	}
 
+	if runner.request.OnLifecycleEvent == nil {
+		t.Fatal("continue runner did not receive live lifecycle callback")
+	}
+
 	updated, err := store.Load(original.ID)
 	if err != nil {
 		t.Fatalf("Load continued session: %v", err)
@@ -348,5 +352,82 @@ func TestAgentSessionCancelStopsActiveRunAndCancellationWins(t *testing.T) {
 			events,
 			agentpkg.EventCancelled,
 		)
+	}
+}
+
+func TestAgentSessionIgnoresLifecycleEventAfterCancellation(t *testing.T) {
+	store, err := agentpkg.NewSessionStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewSessionStore: %v", err)
+	}
+
+	server := &Server{
+		agentSessionStore: store,
+	}
+
+	now := time.Now().UTC()
+
+	snapshot := agentpkg.SessionSnapshot{
+		ID:        "cancelled-live-event",
+		Workspace: "C:/repo",
+		Task:      "verify source",
+		State:     agentpkg.SessionStateCancelled,
+		CreatedAt: now,
+		UpdatedAt: now,
+	}
+
+	if err := store.Save(snapshot); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+
+	if err := store.AppendEvent(
+		snapshot.ID,
+		agentpkg.SessionEvent{
+			Type:      agentpkg.EventCancelled,
+			Timestamp: now,
+			Message:   "session cancelled",
+		},
+	); err != nil {
+		t.Fatalf("AppendEvent cancelled: %v", err)
+	}
+
+	err = server.persistLiveAgentLifecycleEvent(
+		store,
+		snapshot.ID,
+		agentpkg.SessionEvent{
+			Type:      agentpkg.EventVerificationPassed,
+			Timestamp: now.Add(time.Second),
+			Message:   "verification passed",
+		},
+	)
+	if err != nil {
+		t.Fatalf("persistLiveAgentLifecycleEvent: %v", err)
+	}
+
+	updated, err := store.Load(snapshot.ID)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+
+	if updated.State != agentpkg.SessionStateCancelled {
+		t.Fatalf(
+			"state = %q, want %q",
+			updated.State,
+			agentpkg.SessionStateCancelled,
+		)
+	}
+
+	events, err := store.Events(snapshot.ID)
+	if err != nil {
+		t.Fatalf("Events: %v", err)
+	}
+
+	for _, event := range events {
+		if event.Type == agentpkg.EventVerificationPassed {
+			t.Fatalf(
+				"late verification_passed was persisted after cancellation: %#v",
+				events,
+			)
+		}
 	}
 }

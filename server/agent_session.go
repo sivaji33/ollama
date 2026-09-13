@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -126,6 +127,19 @@ func (s *Server) AgentSessionCreateHandler(c *gin.Context) {
 		return
 	}
 
+	var lifecyclePersistedLive atomic.Bool
+	request.OnLifecycleEvent = func(event agentpkg.SessionEvent) error {
+		if err := s.persistLiveAgentLifecycleEvent(
+			store,
+			request.SessionID,
+			event,
+		); err != nil {
+			return err
+		}
+		lifecyclePersistedLive.Store(true)
+		return nil
+	}
+
 	result, runErr := runner.Run(runContext, request)
 
 	// A runner cannot change the server-owned session identity.
@@ -136,6 +150,7 @@ func (s *Server) AgentSessionCreateHandler(c *gin.Context) {
 		request,
 		result,
 		runErr,
+		lifecyclePersistedLive.Load(),
 	)
 	cancel()
 
@@ -270,6 +285,19 @@ func (s *Server) AgentSessionContinueHandler(c *gin.Context) {
 	ctl.cancels[sessionID] = cancel
 	ctl.mu.Unlock()
 
+	var lifecyclePersistedLive atomic.Bool
+	request.OnLifecycleEvent = func(event agentpkg.SessionEvent) error {
+		if err := s.persistLiveAgentLifecycleEvent(
+			store,
+			sessionID,
+			event,
+		); err != nil {
+			return err
+		}
+		lifecyclePersistedLive.Store(true)
+		return nil
+	}
+
 	runner := s.agentRunner
 	if runner == nil {
 		runner = agentpkg.NewEngine(serverChatClient{server: s})
@@ -284,6 +312,7 @@ func (s *Server) AgentSessionContinueHandler(c *gin.Context) {
 		request,
 		result,
 		runErr,
+		lifecyclePersistedLive.Load(),
 	)
 	cancel()
 
@@ -432,6 +461,7 @@ func (s *Server) finishAgentSession(
 	request agentpkg.RunRequest,
 	result agentpkg.RunResult,
 	runErr error,
+	lifecyclePersistedLive bool,
 ) (bool, error) {
 	ctl := &s.agentSessionCtl
 
@@ -484,16 +514,18 @@ func (s *Server) finishAgentSession(
 		return false, fmt.Errorf("save final session: %w", err)
 	}
 
-	for _, event := range result.LifecycleEvents {
-		if err := store.AppendEvent(
-			request.SessionID,
-			event,
-		); err != nil {
-			return false, fmt.Errorf(
-				"append lifecycle event %q: %w",
-				event.Type,
-				err,
-			)
+	if !lifecyclePersistedLive {
+		for _, event := range result.LifecycleEvents {
+			if err := store.AppendEvent(
+				request.SessionID,
+				event,
+			); err != nil {
+				return false, fmt.Errorf(
+					"append lifecycle event %q: %w",
+					event.Type,
+					err,
+				)
+			}
 		}
 	}
 
@@ -524,6 +556,69 @@ func (s *Server) finishAgentSession(
 	}
 
 	return false, nil
+}
+
+func (s *Server) persistLiveAgentLifecycleEvent(
+	store sessionStore,
+	sessionID string,
+	event agentpkg.SessionEvent,
+) error {
+	ctl := &s.agentSessionCtl
+
+	ctl.mu.Lock()
+	defer ctl.mu.Unlock()
+
+	snapshot, err := store.Load(sessionID)
+	if err != nil {
+		return fmt.Errorf("load session for lifecycle event: %w", err)
+	}
+
+	// Cancellation is terminal. A callback that arrives after cancellation
+	// must not append an event or overwrite the persisted state.
+	if snapshot.State == agentpkg.SessionStateCancelled {
+		return nil
+	}
+
+	snapshot.State = liveAgentLifecycleState(snapshot.State, event.Type)
+	snapshot.UpdatedAt = event.Timestamp
+	if snapshot.UpdatedAt.IsZero() {
+		snapshot.UpdatedAt = time.Now().UTC()
+	}
+
+	if err := store.Save(snapshot); err != nil {
+		return fmt.Errorf("save session for lifecycle event %q: %w", event.Type, err)
+	}
+
+	if err := store.AppendEvent(sessionID, event); err != nil {
+		return fmt.Errorf("append live lifecycle event %q: %w", event.Type, err)
+	}
+
+	return nil
+}
+
+func liveAgentLifecycleState(
+	current agentpkg.SessionState,
+	eventType agentpkg.SessionEventType,
+) agentpkg.SessionState {
+	switch eventType {
+	case agentpkg.EventVerificationStart:
+		if current == agentpkg.SessionStateVerifyFailed ||
+			current == agentpkg.SessionStateRepairing ||
+			current == agentpkg.SessionStateReverifying {
+			return agentpkg.SessionStateReverifying
+		}
+		return agentpkg.SessionStateVerifying
+	case agentpkg.EventVerificationFailed:
+		return agentpkg.SessionStateVerifyFailed
+	case agentpkg.EventRepairStarted:
+		return agentpkg.SessionStateRepairing
+	case agentpkg.EventRepairCompleted:
+		return agentpkg.SessionStateReverifying
+	case agentpkg.EventVerificationPassed:
+		return agentpkg.SessionStateVerified
+	default:
+		return current
+	}
 }
 
 func (s *Server) AgentSessionGetHandler(c *gin.Context) {
