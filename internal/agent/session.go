@@ -75,6 +75,7 @@ type RunResult struct {
 	GitDiff             string               `json:"git_diff"`
 	VerificationResults []VerificationResult `json:"verification_results"`
 	StepEvents          []StepEvent          `json:"step_events"`
+	LifecycleEvents     []SessionEvent       `json:"lifecycle_events,omitempty"`
 	FinalSummary        string               `json:"final_summary"`
 }
 

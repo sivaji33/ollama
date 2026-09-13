@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/ollama/ollama/api"
@@ -72,6 +73,7 @@ func (e *Engine) Run(ctx context.Context, request RunRequest) (RunResult, error)
 	}
 	repairs := 0
 	madeMeaningfulEdit := false
+	repairPending := false
 	for step := 1; step <= maxSteps; step++ {
 		result.StepsExecuted = step
 		response, err := e.chatOnce(ctx, request.Model, messages)
@@ -98,6 +100,17 @@ func (e *Engine) Run(ctx context.Context, request RunRequest) (RunResult, error)
 						madeMeaningfulEdit = madeMeaningfulEdit || meaningful
 						if meaningful {
 							result.StepEvents = append(result.StepEvents, StepEvent{Step: step, Kind: StepEditDetected, ToolName: call.Function.Name})
+
+							if repairPending {
+								result.LifecycleEvents = append(
+									result.LifecycleEvents,
+									newLifecycleEvent(
+										EventRepairCompleted,
+										"repair completed",
+									),
+								)
+								repairPending = false
+							}
 						}
 					}
 				}
@@ -124,11 +137,27 @@ func (e *Engine) Run(ctx context.Context, request RunRequest) (RunResult, error)
 			result.FinalSummary = "maximum agent steps reached without a meaningful source diff"
 			return result, nil
 		}
+		result.LifecycleEvents = append(
+			result.LifecycleEvents,
+			newLifecycleEvent(
+				EventVerificationStart,
+				"verification started",
+			),
+		)
+
 		verification, passed := verifyAll(ctx, workspace, request.Verify)
 		result.VerificationResults = verification
 		passedCopy := passed
 		result.StepEvents = append(result.StepEvents, StepEvent{Step: step, Kind: StepVerification, Passed: &passedCopy})
 		if passed {
+			result.LifecycleEvents = append(
+				result.LifecycleEvents,
+				newLifecycleEvent(
+					EventVerificationPassed,
+					"verification passed",
+				),
+			)
+
 			result.Status = StatusSuccess
 			result.FinalSummary = strings.TrimSpace(response.Message.Content)
 			if result.FinalSummary == "" {
@@ -136,11 +165,28 @@ func (e *Engine) Run(ctx context.Context, request RunRequest) (RunResult, error)
 			}
 			return result, nil
 		}
+		result.LifecycleEvents = append(
+			result.LifecycleEvents,
+			newLifecycleEvent(
+				EventVerificationFailed,
+				"verification failed",
+			),
+		)
+
 		if repairs >= MaxRepairAttempts {
 			result.FinalSummary = "verification failed after maximum repair attempts"
 			return result, nil
 		}
 		repairs++
+		repairPending = true
+
+		result.LifecycleEvents = append(
+			result.LifecycleEvents,
+			newLifecycleEvent(
+				EventRepairStarted,
+				"repair started",
+			),
+		)
 		result.StepEvents = append(result.StepEvents, StepEvent{Step: step, Kind: StepRepair})
 		encoded, _ := json.Marshal(verification)
 		messages = append(messages, api.Message{Role: "user", Content: fmt.Sprintf("Verification failed (repair attempt %d of %d). Diagnose, edit with tools, inspect the diff, and retry. Results: %s", repairs, MaxRepairAttempts, encoded)})
@@ -149,6 +195,17 @@ func (e *Engine) Run(ctx context.Context, request RunRequest) (RunResult, error)
 	diff, changed, _ := workspace.GitDiff(ctx)
 	result.GitDiff, result.ChangedFiles = diff, changed
 	return result, nil
+}
+
+func newLifecycleEvent(
+	eventType SessionEventType,
+	message string,
+) SessionEvent {
+	return SessionEvent{
+		Type:      eventType,
+		Timestamp: time.Now().UTC(),
+		Message:   message,
+	}
 }
 
 func (e *Engine) chatOnce(ctx context.Context, model string, messages []api.Message) (api.ChatResponse, error) {
