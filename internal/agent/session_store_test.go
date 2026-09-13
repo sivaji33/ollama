@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -254,5 +255,178 @@ func TestSessionStoreDoesNotCopyWorkspaceSource(t *testing.T) {
 
 	if _, err := os.Stat(sourcePath); err != nil {
 		t.Fatalf("original source disappeared: %v", err)
+	}
+}
+
+func TestSessionStoreRecoversInterruptedSessions(t *testing.T) {
+	store, _ := NewSessionStore(t.TempDir())
+	now := time.Date(2026, 9, 14, 0, 0, 0, 0, time.UTC)
+	active := []SessionState{SessionStateRunning, SessionStateEditing, SessionStateDiffDetected, SessionStateVerifying, SessionStateVerifyFailed, SessionStateRepairing, SessionStateReverifying}
+	for i, state := range active {
+		s := testSessionSnapshot(t.TempDir())
+		s.ID = fmt.Sprintf("active-%d", i)
+		s.State = state
+		if err := store.Save(s); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for i, state := range []SessionState{SessionStateVerified, SessionStateFailed, SessionStateCancelled} {
+		s := testSessionSnapshot(t.TempDir())
+		s.ID = fmt.Sprintf("terminal-%d", i)
+		s.State = state
+		if err := store.Save(s); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := store.RecoverInterruptedSessions(now); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.RecoverInterruptedSessions(now.Add(time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	for i := range active {
+		s, _ := store.Load(fmt.Sprintf("active-%d", i))
+		if s.State != SessionStateInterrupted || !s.UpdatedAt.Equal(now) {
+			t.Fatalf("active %d = %+v", i, s)
+		}
+		events, _ := store.Events(s.ID)
+		if len(events) != 1 || events[0].Type != EventSessionInterrupted {
+			t.Fatalf("events = %#v", events)
+		}
+	}
+	for i, want := range []SessionState{SessionStateVerified, SessionStateFailed, SessionStateCancelled} {
+		s, _ := store.Load(fmt.Sprintf("terminal-%d", i))
+		events, _ := store.Events(s.ID)
+		if s.State != want || len(events) != 0 {
+			t.Fatalf("terminal = %+v events=%#v", s, events)
+		}
+	}
+}
+
+func TestSessionStoreRecoveryPreservesEvidence(t *testing.T) {
+	store, _ := NewSessionStore(t.TempDir())
+	s := testSessionSnapshot(t.TempDir())
+	s.ChangedFiles = []string{"main.go"}
+	s.VerificationResults = []VerificationResult{{Command: "go test", Passed: false}}
+	s.FinalSummary = "partial"
+	if err := store.Save(s); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SaveDiff(s.ID, "existing diff"); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.AppendEvent(s.ID, SessionEvent{Type: EventEditingStarted, Timestamp: s.CreatedAt}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.RecoverInterruptedSessions(s.CreatedAt.Add(time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	got, _ := store.Load(s.ID)
+	diff, _ := store.LoadDiff(s.ID)
+	events, _ := store.Events(s.ID)
+	if len(got.ChangedFiles) != 1 || len(got.VerificationResults) != 1 || got.FinalSummary != "partial" || diff != "existing diff" || len(events) != 2 {
+		t.Fatalf("evidence lost: %+v %q %#v", got, diff, events)
+	}
+}
+
+func TestSessionStoreRecoveryRetriesSaveWithoutDuplicatingInterruptionEvent(t *testing.T) {
+	store, err := NewSessionStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewSessionStore: %v", err)
+	}
+	snapshot := testSessionSnapshot(t.TempDir())
+	recoveredAt := snapshot.CreatedAt.Add(time.Hour)
+	if err := store.Save(snapshot); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	if err := store.AppendEvent(snapshot.ID, SessionEvent{
+		Type:      EventSessionInterrupted,
+		Timestamp: recoveredAt,
+		Message:   "session interrupted before completion",
+	}); err != nil {
+		t.Fatalf("AppendEvent: %v", err)
+	}
+
+	if err := store.RecoverInterruptedSessions(recoveredAt); err != nil {
+		t.Fatalf("RecoverInterruptedSessions: %v", err)
+	}
+
+	got, err := store.Load(snapshot.ID)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if got.State != SessionStateInterrupted {
+		t.Fatalf("State = %q, want %q", got.State, SessionStateInterrupted)
+	}
+	events, err := store.Events(snapshot.ID)
+	if err != nil {
+		t.Fatalf("Events: %v", err)
+	}
+	count := 0
+	for _, event := range events {
+		if event.Type == EventSessionInterrupted {
+			count++
+		}
+	}
+	if count != 1 {
+		t.Fatalf("session_interrupted count = %d, want 1; events=%#v", count, events)
+	}
+}
+
+func TestSessionStoreRecoveryRecordsSeparateInterruptionEpisodes(t *testing.T) {
+	store, err := NewSessionStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewSessionStore: %v", err)
+	}
+	snapshot := testSessionSnapshot(t.TempDir())
+	firstRecovery := snapshot.UpdatedAt.Add(time.Hour)
+	if err := store.Save(snapshot); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	if err := store.RecoverInterruptedSessions(firstRecovery); err != nil {
+		t.Fatalf("first recovery: %v", err)
+	}
+
+	continuedAt := firstRecovery.Add(time.Hour)
+	snapshot, err = store.Load(snapshot.ID)
+	if err != nil {
+		t.Fatalf("Load after first recovery: %v", err)
+	}
+	snapshot.State = SessionStateRunning
+	snapshot.UpdatedAt = continuedAt
+	if err := store.Save(snapshot); err != nil {
+		t.Fatalf("Save continued session: %v", err)
+	}
+	if err := store.AppendEvent(snapshot.ID, SessionEvent{
+		Type:      EventSessionContinued,
+		Timestamp: continuedAt,
+		Message:   "session continued",
+	}); err != nil {
+		t.Fatalf("AppendEvent continued: %v", err)
+	}
+
+	secondRecovery := continuedAt.Add(time.Hour)
+	if err := store.RecoverInterruptedSessions(secondRecovery); err != nil {
+		t.Fatalf("second recovery: %v", err)
+	}
+	snapshot, err = store.Load(snapshot.ID)
+	if err != nil {
+		t.Fatalf("Load after second recovery: %v", err)
+	}
+	if snapshot.State != SessionStateInterrupted {
+		t.Fatalf("State = %q, want %q", snapshot.State, SessionStateInterrupted)
+	}
+	events, err := store.Events(snapshot.ID)
+	if err != nil {
+		t.Fatalf("Events: %v", err)
+	}
+	count := 0
+	for _, event := range events {
+		if event.Type == EventSessionInterrupted {
+			count++
+		}
+	}
+	if count != 2 {
+		t.Fatalf("session_interrupted count = %d, want 2; events=%#v", count, events)
 	}
 }

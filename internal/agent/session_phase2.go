@@ -12,6 +12,7 @@ const (
 	SessionStateVerified     SessionState = "VERIFIED"
 	SessionStateFailed       SessionState = "FAILED"
 	SessionStateCancelled    SessionState = "CANCELLED"
+	SessionStateInterrupted  SessionState = "INTERRUPTED"
 )
 
 const (
@@ -29,6 +30,7 @@ const (
 	EventRepairCompleted    SessionEventType = "repair_completed"
 	EventCancelRequested    SessionEventType = "cancel_requested"
 	EventCancelled          SessionEventType = "cancelled"
+	EventSessionInterrupted SessionEventType = "session_interrupted"
 	EventCompleted          SessionEventType = "completed"
 	EventFailed             SessionEventType = "failed"
 )

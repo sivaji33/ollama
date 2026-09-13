@@ -22,21 +22,31 @@ type sessionStore interface {
 	Events(string) ([]agentpkg.SessionEvent, error)
 	SaveDiff(string, string) error
 	LoadDiff(string) (string, error)
+	RecoverInterruptedSessions(time.Time) error
 }
 
 func (s *Server) resolveAgentSessionStore() (sessionStore, error) {
-	if s.agentSessionStore != nil {
-		return s.agentSessionStore, nil
+	store := s.agentSessionStore
+	if store == nil {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return nil, err
+		}
+		store, err = agentpkg.NewSessionStore(
+			filepath.Join(home, ".ollama", "agent", "sessions"),
+		)
+		if err != nil {
+			return nil, err
+		}
 	}
 
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return nil, err
+	s.agentSessionRecoveryOnce.Do(func() {
+		s.agentSessionRecoveryErr = store.RecoverInterruptedSessions(time.Now().UTC())
+	})
+	if s.agentSessionRecoveryErr != nil {
+		return nil, fmt.Errorf("recover interrupted agent sessions: %w", s.agentSessionRecoveryErr)
 	}
-
-	return agentpkg.NewSessionStore(
-		filepath.Join(home, ".ollama", "agent", "sessions"),
-	)
+	return store, nil
 }
 
 func (s *Server) AgentSessionCreateHandler(c *gin.Context) {
@@ -503,11 +513,13 @@ func (s *Server) finishAgentSession(
 		eventMessage = "session completed"
 	}
 
-	if err := store.SaveDiff(
-		request.SessionID,
-		result.GitDiff,
-	); err != nil {
-		return false, fmt.Errorf("save final diff: %w", err)
+	if strings.TrimSpace(result.GitDiff) != "" {
+		if err := store.SaveDiff(
+			request.SessionID,
+			result.GitDiff,
+		); err != nil {
+			return false, fmt.Errorf("save final diff: %w", err)
+		}
 	}
 
 	if err := store.Save(snapshot); err != nil {

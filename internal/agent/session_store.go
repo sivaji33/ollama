@@ -250,6 +250,82 @@ func (s *SessionStore) LoadDiff(sessionID string) (string, error) {
 	return string(data), nil
 }
 
+func (s *SessionStore) RecoverInterruptedSessions(recoveredAt time.Time) error {
+	if s == nil {
+		return errors.New("session store is nil")
+	}
+
+	entries, err := os.ReadDir(s.root)
+	if err != nil {
+		return fmt.Errorf("list persisted sessions: %w", err)
+	}
+
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+
+		sessionPath := filepath.Join(s.sessionDir(entry.Name()), sessionFileName)
+		if _, err := os.Stat(sessionPath); errors.Is(err, os.ErrNotExist) {
+			continue
+		} else if err != nil {
+			return fmt.Errorf("inspect persisted session %q: %w", entry.Name(), err)
+		}
+
+		snapshot, err := s.Load(entry.Name())
+		if err != nil {
+			return fmt.Errorf("load persisted session %q for recovery: %w", entry.Name(), err)
+		}
+		if !isInterruptibleSessionState(snapshot.State) {
+			continue
+		}
+
+		events, err := s.Events(snapshot.ID)
+		if err != nil {
+			return fmt.Errorf("read events for session %q recovery: %w", snapshot.ID, err)
+		}
+		var latestInterruption time.Time
+		for _, event := range events {
+			if event.Type == EventSessionInterrupted &&
+				event.Timestamp.After(latestInterruption) {
+				latestInterruption = event.Timestamp
+			}
+		}
+		if latestInterruption.IsZero() || snapshot.UpdatedAt.After(latestInterruption) {
+			if err := s.AppendEvent(snapshot.ID, SessionEvent{
+				Type:      EventSessionInterrupted,
+				Timestamp: recoveredAt,
+				Message:   "session interrupted before completion",
+			}); err != nil {
+				return fmt.Errorf("append interruption event for session %q: %w", snapshot.ID, err)
+			}
+		}
+
+		snapshot.State = SessionStateInterrupted
+		snapshot.UpdatedAt = recoveredAt
+		if err := s.Save(snapshot); err != nil {
+			return fmt.Errorf("save interrupted session %q: %w", snapshot.ID, err)
+		}
+	}
+
+	return nil
+}
+
+func isInterruptibleSessionState(state SessionState) bool {
+	switch state {
+	case SessionStateRunning,
+		SessionStateEditing,
+		SessionStateDiffDetected,
+		SessionStateVerifying,
+		SessionStateVerifyFailed,
+		SessionStateRepairing,
+		SessionStateReverifying:
+		return true
+	default:
+		return false
+	}
+}
+
 func (s *SessionStore) sessionDir(sessionID string) string {
 	return filepath.Join(s.root, sessionID)
 }

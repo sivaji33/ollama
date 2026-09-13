@@ -22,6 +22,7 @@ import (
 	"os/signal"
 	"slices"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"syscall"
 	"time"
@@ -96,14 +97,16 @@ var useClient2 = experimentEnabled("client2")
 var mode string = gin.DebugMode
 
 type Server struct {
-	addr              net.Addr
-	sched             *Scheduler
-	defaultNumCtx     int
-	requestLogger     *inferenceRequestLogger
-	modelCaches       *modelCaches
-	agentRunner       agentRunner
-	agentSessionStore sessionStore
-	agentSessionCtl   agentSessionControl
+	addr                     net.Addr
+	sched                    *Scheduler
+	defaultNumCtx            int
+	requestLogger            *inferenceRequestLogger
+	modelCaches              *modelCaches
+	agentRunner              agentRunner
+	agentSessionStore        sessionStore
+	agentSessionCtl          agentSessionControl
+	agentSessionRecoveryOnce sync.Once
+	agentSessionRecoveryErr  error
 }
 
 func init() {
