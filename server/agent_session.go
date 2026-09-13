@@ -484,6 +484,19 @@ func (s *Server) finishAgentSession(
 		return false, fmt.Errorf("save final session: %w", err)
 	}
 
+	for _, event := range result.LifecycleEvents {
+		if err := store.AppendEvent(
+			request.SessionID,
+			event,
+		); err != nil {
+			return false, fmt.Errorf(
+				"append lifecycle event %q: %w",
+				event.Type,
+				err,
+			)
+		}
+	}
+
 	if result.ContextBuilt {
 		if err := store.AppendEvent(
 			request.SessionID,
