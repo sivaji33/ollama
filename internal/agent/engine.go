@@ -44,13 +44,25 @@ func (e *Engine) Run(ctx context.Context, request RunRequest) (RunResult, error)
 	if maxSteps < 1 || maxSteps > 100 {
 		return result, errors.New("max_steps must be between 1 and 100")
 	}
-	inspection, err := workspace.SearchFiles("", 100)
+	repositoryContext, err := NewRepositoryContextBuilder(
+		RepositoryContextOptions{},
+	).Build(
+		ctx,
+		request.Workspace,
+		request.Task,
+	)
 	if err != nil {
-		return result, err
+		return result, fmt.Errorf("build repository context: %w", err)
 	}
+
 	messages := []api.Message{
 		{Role: "system", Content: systemPrompt},
-		{Role: "user", Content: request.Task + "\n\nInitial workspace file listing:\n" + inspection},
+		{
+			Role: "user",
+			Content: request.Task +
+				"\n\n" +
+				formatRepositoryContext(repositoryContext),
+		},
 	}
 	baselineDiff, _, err := workspace.GitDiff(ctx)
 	if err != nil {
