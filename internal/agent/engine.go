@@ -73,6 +73,8 @@ func (e *Engine) Run(ctx context.Context, request RunRequest) (RunResult, error)
 	}
 	repairs := 0
 	madeMeaningfulEdit := false
+	editingStarted := false
+	diffDetected := false
 	repairPending := false
 	for step := 1; step <= maxSteps; step++ {
 		result.StepsExecuted = step
@@ -86,6 +88,28 @@ func (e *Engine) Run(ctx context.Context, request RunRequest) (RunResult, error)
 			result.StepEvents = append(result.StepEvents, StepEvent{Step: step, Kind: StepToolCall})
 			for _, call := range response.Message.ToolCalls {
 				record := ToolCallRecord{Step: step, ID: call.ID, Name: call.Function.Name, Arguments: call.Function.Arguments.ToMap()}
+				if call.Function.Name == "apply_patch" && !repairPending && !editingStarted {
+					path, _ := stringArg(&call.Function.Arguments, "path")
+					oldText, _ := stringArg(&call.Function.Arguments, "old_text")
+					newText, _ := stringArg(&call.Function.Arguments, "new_text")
+					if isMeaningfulSourceEdit(path, oldText, newText) {
+						if err := emitLifecycleEvent(
+							&result,
+							request,
+							newLifecycleEvent(
+								EventEditingStarted,
+								"editing started",
+							),
+						); err != nil {
+							return result, fmt.Errorf(
+								"publish lifecycle event %q: %w",
+								EventEditingStarted,
+								err,
+							)
+						}
+						editingStarted = true
+					}
+				}
 				observation, toolErr := executeTool(ctx, workspace, call)
 				if toolErr != nil {
 					record.Error = toolErr.Error()
@@ -143,6 +167,23 @@ func (e *Engine) Run(ctx context.Context, request RunRequest) (RunResult, error)
 			}
 			result.FinalSummary = "maximum agent steps reached without a meaningful source diff"
 			return result, nil
+		}
+		if !diffDetected {
+			if err := emitLifecycleEvent(
+				&result,
+				request,
+				newLifecycleEvent(
+					EventDiffDetected,
+					"meaningful source diff detected",
+				),
+			); err != nil {
+				return result, fmt.Errorf(
+					"publish lifecycle event %q: %w",
+					EventDiffDetected,
+					err,
+				)
+			}
+			diffDetected = true
 		}
 		if err := emitLifecycleEvent(
 			&result,

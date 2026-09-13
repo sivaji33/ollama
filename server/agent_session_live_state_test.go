@@ -17,6 +17,141 @@ type liveSessionStateRunner struct {
 	release   chan struct{}
 }
 
+type liveFirstPassStateRunner struct {
+	sessionID chan string
+	published chan agentpkg.SessionEventType
+	release   chan struct{}
+}
+
+func (r *liveFirstPassStateRunner) Run(
+	_ context.Context,
+	request agentpkg.RunRequest,
+) (agentpkg.RunResult, error) {
+	r.sessionID <- request.SessionID
+	eventTypes := []agentpkg.SessionEventType{
+		agentpkg.EventEditingStarted,
+		agentpkg.EventDiffDetected,
+		agentpkg.EventVerificationStart,
+		agentpkg.EventVerificationPassed,
+	}
+	result := agentpkg.RunResult{Status: agentpkg.StatusSuccess}
+	for _, eventType := range eventTypes {
+		event := agentpkg.SessionEvent{Type: eventType, Timestamp: time.Now().UTC()}
+		result.LifecycleEvents = append(result.LifecycleEvents, event)
+		if err := request.OnLifecycleEvent(event); err != nil {
+			return result, err
+		}
+		r.published <- eventType
+		<-r.release
+	}
+	return result, nil
+}
+
+func TestAgentSessionUpdatesFirstPassStatesWhileRunIsActive(t *testing.T) {
+	runner := &liveFirstPassStateRunner{
+		sessionID: make(chan string, 1),
+		published: make(chan agentpkg.SessionEventType),
+		release:   make(chan struct{}),
+	}
+	server, store := newSessionAPITestServer(t, runner)
+	router := sessionAPIRouter(server)
+	req := httptest.NewRequest(http.MethodPost, "/api/agent/session", bytes.NewReader([]byte(`{
+        "workspace":"C:/repo",
+        "task":"edit and verify source"
+    }`)))
+	req.Header.Set("Content-Type", "application/json")
+	recorder := httptest.NewRecorder()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		router.ServeHTTP(recorder, req)
+	}()
+
+	sessionID := <-runner.sessionID
+	wantStates := []agentpkg.SessionState{
+		agentpkg.SessionStateEditing,
+		agentpkg.SessionStateDiffDetected,
+		agentpkg.SessionStateVerifying,
+		agentpkg.SessionStateVerified,
+	}
+	for i, wantState := range wantStates {
+		select {
+		case <-runner.published:
+		case <-time.After(2 * time.Second):
+			t.Fatalf("runner did not publish lifecycle event %d", i)
+		}
+		snapshot, err := store.Load(sessionID)
+		if err != nil {
+			t.Fatalf("Load active session after event %d: %v", i, err)
+		}
+		if snapshot.State != wantState {
+			t.Fatalf("active state after event %d = %q, want %q", i, snapshot.State, wantState)
+		}
+		runner.release <- struct{}{}
+	}
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("session request did not finish")
+	}
+
+	events, err := store.Events(sessionID)
+	if err != nil {
+		t.Fatalf("Events: %v", err)
+	}
+	wantOrder := []agentpkg.SessionEventType{
+		agentpkg.EventSessionCreated,
+		agentpkg.EventEditingStarted,
+		agentpkg.EventDiffDetected,
+		agentpkg.EventVerificationStart,
+		agentpkg.EventVerificationPassed,
+		agentpkg.EventCompleted,
+	}
+	assertLifecycleEventRelativeOrder(t, events, wantOrder)
+}
+
+func assertLifecycleEventRelativeOrder(
+	t *testing.T,
+	events []agentpkg.SessionEvent,
+	want []agentpkg.SessionEventType,
+) {
+	t.Helper()
+	next := 0
+	for _, event := range events {
+		if next < len(want) && event.Type == want[next] {
+			next++
+		}
+	}
+	if next != len(want) {
+		t.Fatalf("events do not contain relative order %v: %#v", want, events)
+	}
+}
+
+func TestLiveAgentLifecycleStatePreservesRepairStatesForInitialEditEvents(t *testing.T) {
+	states := []agentpkg.SessionState{
+		agentpkg.SessionStateVerifyFailed,
+		agentpkg.SessionStateRepairing,
+		agentpkg.SessionStateReverifying,
+	}
+	events := []agentpkg.SessionEventType{
+		agentpkg.EventEditingStarted,
+		agentpkg.EventDiffDetected,
+	}
+
+	for _, state := range states {
+		for _, eventType := range events {
+			if got := liveAgentLifecycleState(state, eventType); got != state {
+				t.Fatalf(
+					"state %q with event %q became %q",
+					state,
+					eventType,
+					got,
+				)
+			}
+		}
+	}
+}
+
 func (r *liveSessionStateRunner) Run(
 	_ context.Context,
 	request agentpkg.RunRequest,
@@ -185,19 +320,21 @@ func (r *liveLifecycleDuplicateRunner) Run(
 	request agentpkg.RunRequest,
 ) (agentpkg.RunResult, error) {
 	r.sessionID = request.SessionID
-	event := agentpkg.SessionEvent{
-		Type:      agentpkg.EventVerificationStart,
-		Timestamp: time.Now().UTC(),
-		Message:   "verification started",
+	events := []agentpkg.SessionEvent{
+		{Type: agentpkg.EventEditingStarted, Timestamp: time.Now().UTC()},
+		{Type: agentpkg.EventDiffDetected, Timestamp: time.Now().UTC()},
+		{Type: agentpkg.EventVerificationStart, Timestamp: time.Now().UTC()},
 	}
 
-	if err := request.OnLifecycleEvent(event); err != nil {
-		return agentpkg.RunResult{}, err
+	for _, event := range events {
+		if err := request.OnLifecycleEvent(event); err != nil {
+			return agentpkg.RunResult{}, err
+		}
 	}
 
 	return agentpkg.RunResult{
 		Status:          agentpkg.StatusSuccess,
-		LifecycleEvents: []agentpkg.SessionEvent{event},
+		LifecycleEvents: events,
 		FinalSummary:    "verified",
 	}, nil
 }
@@ -229,14 +366,19 @@ func TestAgentSessionDoesNotDuplicateLiveLifecycleEventsAfterCompletion(t *testi
 		t.Fatalf("Events: %v", err)
 	}
 
-	count := 0
-	for _, event := range events {
-		if event.Type == agentpkg.EventVerificationStart {
-			count++
+	for _, eventType := range []agentpkg.SessionEventType{
+		agentpkg.EventEditingStarted,
+		agentpkg.EventDiffDetected,
+		agentpkg.EventVerificationStart,
+	} {
+		count := 0
+		for _, event := range events {
+			if event.Type == eventType {
+				count++
+			}
 		}
-	}
-
-	if count != 1 {
-		t.Fatalf("verification_started count = %d, want 1; events=%#v", count, events)
+		if count != 1 {
+			t.Fatalf("event %q count = %d, want 1; events=%#v", eventType, count, events)
+		}
 	}
 }

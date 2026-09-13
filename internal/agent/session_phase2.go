@@ -20,6 +20,8 @@ const (
 	EventToolCall           SessionEventType = "tool_call"
 	EventToolResult         SessionEventType = "tool_result"
 	EventEditDetected       SessionEventType = "edit_detected"
+	EventEditingStarted     SessionEventType = "editing_started"
+	EventDiffDetected       SessionEventType = "diff_detected"
 	EventVerificationStart  SessionEventType = "verification_started"
 	EventVerificationPassed SessionEventType = "verification_passed"
 	EventVerificationFailed SessionEventType = "verification_failed"

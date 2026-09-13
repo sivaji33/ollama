@@ -395,9 +395,9 @@ func TestAgentSessionIgnoresLifecycleEventAfterCancellation(t *testing.T) {
 		store,
 		snapshot.ID,
 		agentpkg.SessionEvent{
-			Type:      agentpkg.EventVerificationPassed,
+			Type:      agentpkg.EventEditingStarted,
 			Timestamp: now.Add(time.Second),
-			Message:   "verification passed",
+			Message:   "editing started",
 		},
 	)
 	if err != nil {
@@ -423,9 +423,9 @@ func TestAgentSessionIgnoresLifecycleEventAfterCancellation(t *testing.T) {
 	}
 
 	for _, event := range events {
-		if event.Type == agentpkg.EventVerificationPassed {
+		if event.Type == agentpkg.EventEditingStarted {
 			t.Fatalf(
-				"late verification_passed was persisted after cancellation: %#v",
+				"late editing_started was persisted after cancellation: %#v",
 				events,
 			)
 		}

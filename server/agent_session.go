@@ -601,6 +601,17 @@ func liveAgentLifecycleState(
 	eventType agentpkg.SessionEventType,
 ) agentpkg.SessionState {
 	switch eventType {
+	case agentpkg.EventEditingStarted:
+		if current == agentpkg.SessionStateRunning {
+			return agentpkg.SessionStateEditing
+		}
+		return current
+	case agentpkg.EventDiffDetected:
+		if current == agentpkg.SessionStateRunning ||
+			current == agentpkg.SessionStateEditing {
+			return agentpkg.SessionStateDiffDetected
+		}
+		return current
 	case agentpkg.EventVerificationStart:
 		if current == agentpkg.SessionStateVerifyFailed ||
 			current == agentpkg.SessionStateRepairing ||

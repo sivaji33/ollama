@@ -89,6 +89,8 @@ func TestEngineEmitsRepairReverificationLifecycle(t *testing.T) {
 	}
 
 	want := []SessionEventType{
+		EventEditingStarted,
+		EventDiffDetected,
 		EventVerificationStart,
 		EventVerificationFailed,
 		EventRepairStarted,

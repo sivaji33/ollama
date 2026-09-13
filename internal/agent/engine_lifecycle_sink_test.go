@@ -2,6 +2,8 @@ package agent
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/ollama/ollama/api"
@@ -59,6 +61,15 @@ func TestEnginePublishesLifecycleEventsBeforeRunReturns(t *testing.T) {
 						event.Type,
 					)
 				}
+				if event.Type == EventEditingStarted {
+					contents, err := os.ReadFile(filepath.Join(root, "main.go"))
+					if err != nil {
+						t.Fatalf("read source during editing event: %v", err)
+					}
+					if string(contents) != "package old\n" {
+						t.Fatalf("editing event arrived after tool completed: %q", contents)
+					}
+				}
 
 				published = append(published, event)
 				return nil
@@ -82,6 +93,8 @@ func TestEnginePublishesLifecycleEventsBeforeRunReturns(t *testing.T) {
 	}
 
 	want := []SessionEventType{
+		EventEditingStarted,
+		EventDiffDetected,
 		EventVerificationStart,
 		EventVerificationPassed,
 	}
@@ -122,6 +135,52 @@ func TestEnginePublishesLifecycleEventsBeforeRunReturns(t *testing.T) {
 				result.LifecycleEvents[i].Type,
 				published[i].Type,
 			)
+		}
+	}
+}
+
+func TestEngineDoesNotPublishDiffDetectedWithoutMeaningfulRealDiff(t *testing.T) {
+	root := initRepo(t)
+	chat := &scriptedChat{responses: []api.ChatResponse{
+		{
+			Message: api.Message{Role: "assistant", ToolCalls: []api.ToolCall{{
+				ID: "failed-edit",
+				Function: api.ToolCallFunction{
+					Name: "apply_patch",
+					Arguments: args(map[string]any{
+						"path":     "main.go",
+						"old_text": "package missing",
+						"new_text": "package main",
+					}),
+				},
+			}}},
+		},
+		{Message: api.Message{Role: "assistant", Content: "done"}},
+	}}
+
+	var published []SessionEventType
+	result, err := NewEngine(chat).Run(context.Background(), RunRequest{
+		Model:     "test",
+		Workspace: root,
+		Task:      "change main.go",
+		MaxSteps:  2,
+		OnLifecycleEvent: func(event SessionEvent) error {
+			published = append(published, event.Type)
+			return nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if result.Status == StatusSuccess {
+		t.Fatalf("failed edit reported success: %+v", result)
+	}
+	for _, eventType := range published {
+		if eventType == EventDiffDetected {
+			t.Fatalf("diff_detected published without meaningful real diff: %v", published)
+		}
+		if eventType == EventVerificationPassed {
+			t.Fatalf("verification passed without meaningful real diff: %v", published)
 		}
 	}
 }
