@@ -484,6 +484,21 @@ func (s *Server) finishAgentSession(
 		return false, fmt.Errorf("save final session: %w", err)
 	}
 
+	if result.ContextBuilt {
+		if err := store.AppendEvent(
+			request.SessionID,
+			agentpkg.SessionEvent{
+				Type:      agentpkg.EventContextBuilt,
+				Timestamp: now,
+				Message:   "repository context built",
+			},
+		); err != nil {
+			return false, fmt.Errorf(
+				"append context-built event: %w",
+				err,
+			)
+		}
+	}
 	if err := store.AppendEvent(
 		request.SessionID,
 		agentpkg.SessionEvent{

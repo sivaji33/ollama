@@ -82,6 +82,9 @@ func TestEngineFirstTurnUsesBoundedRepositoryContext(t *testing.T) {
 	if result.Status == StatusSuccess {
 		t.Fatalf("unexpected success without source edit")
 	}
+	if !result.ContextBuilt {
+		t.Fatalf("real engine did not report repository context as built")
+	}
 
 	if len(chat.requests) != 1 {
 		t.Fatalf(

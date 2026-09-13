@@ -55,6 +55,8 @@ func (e *Engine) Run(ctx context.Context, request RunRequest) (RunResult, error)
 		return result, fmt.Errorf("build repository context: %w", err)
 	}
 
+	result.ContextBuilt = true
+
 	messages := []api.Message{
 		{Role: "system", Content: systemPrompt},
 		{

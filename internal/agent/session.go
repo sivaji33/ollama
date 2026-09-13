@@ -69,6 +69,7 @@ type RunResult struct {
 	SessionID           string               `json:"session_id"`
 	Status              Status               `json:"status"`
 	StepsExecuted       int                  `json:"steps_executed"`
+	ContextBuilt        bool                 `json:"context_built,omitempty"`
 	ToolCalls           []ToolCallRecord     `json:"tool_calls"`
 	ChangedFiles        []string             `json:"changed_files"`
 	GitDiff             string               `json:"git_diff"`
