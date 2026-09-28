@@ -2,6 +2,7 @@ package server
 
 import (
 	"bytes"
+	"encoding/json"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -94,7 +95,18 @@ func TestAgentSessionPersistsContextBuiltBeforeCompletion(t *testing.T) {
 		)
 	}
 
-	events, err := store.Events(runner.request.SessionID)
+	var accepted agentpkg.SessionSnapshot
+	if err := json.Unmarshal(recorder.Body.Bytes(), &accepted); err != nil {
+		t.Fatalf("decode accepted session: %v", err)
+	}
+	waitForPersistedSessionState(
+		t,
+		store,
+		accepted.ID,
+		agentpkg.SessionStateVerified,
+	)
+
+	events, err := store.Events(accepted.ID)
 	if err != nil {
 		t.Fatalf("Events: %v", err)
 	}

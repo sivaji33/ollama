@@ -15,6 +15,9 @@ type RepositoryContextOptions struct {
 	MaxTrackedFiles  int
 	MaxRelevantFiles int
 	MaxRecentFiles   int
+	MaxTestFiles     int
+	MaxDocFiles      int
+	MaxTopDirs       int
 }
 
 type RepositoryContext struct {
@@ -26,6 +29,9 @@ type RepositoryContext struct {
 	Manifests     []string `json:"manifests,omitempty"`
 	Languages     []string `json:"languages,omitempty"`
 	RecentFiles   []string `json:"recent_files,omitempty"`
+	TestFiles     []string `json:"test_files,omitempty"`
+	DocFiles      []string `json:"doc_files,omitempty"`
+	TopDirs       []string `json:"top_dirs,omitempty"`
 }
 
 type RepositoryContextBuilder struct {
@@ -41,6 +47,15 @@ func NewRepositoryContextBuilder(options RepositoryContextOptions) *RepositoryCo
 	}
 	if options.MaxRecentFiles <= 0 {
 		options.MaxRecentFiles = 40
+	}
+	if options.MaxTestFiles <= 0 {
+		options.MaxTestFiles = 40
+	}
+	if options.MaxDocFiles <= 0 {
+		options.MaxDocFiles = 20
+	}
+	if options.MaxTopDirs <= 0 {
+		options.MaxTopDirs = 20
 	}
 
 	return &RepositoryContextBuilder{options: options}
@@ -104,6 +119,9 @@ func (b *RepositoryContextBuilder) Build(
 		result.GitStatus,
 		b.options.MaxRecentFiles,
 	)
+	result.TestFiles = findTestFiles(allFiles, b.options.MaxTestFiles)
+	result.DocFiles = findDocFiles(allFiles, b.options.MaxDocFiles)
+	result.TopDirs = findTopDirs(allFiles, b.options.MaxTopDirs)
 
 	return result, nil
 }
@@ -329,4 +347,86 @@ func findRecent(status []string, max int) []string {
 
 	sort.Strings(result)
 	return bounded(result, max)
+}
+
+func findTestFiles(files []string, max int) []string {
+	var result []string
+	for _, file := range files {
+		if isTestPath(file) {
+			result = append(result, file)
+		}
+	}
+
+	sort.Strings(result)
+	return bounded(result, max)
+}
+
+func findDocFiles(files []string, max int) []string {
+	var result []string
+	for _, file := range files {
+		if isDocPath(file) {
+			result = append(result, file)
+		}
+	}
+
+	sort.Strings(result)
+	return bounded(result, max)
+}
+
+func findTopDirs(files []string, max int) []string {
+	seen := map[string]bool{}
+	var result []string
+
+	for _, file := range files {
+		segments := strings.Split(filepath.ToSlash(file), "/")
+		if len(segments) < 2 {
+			continue
+		}
+
+		dir := segments[0]
+		if dir == "" || dir == ".git" || seen[dir] {
+			continue
+		}
+
+		seen[dir] = true
+		result = append(result, dir)
+	}
+
+	sort.Strings(result)
+	return bounded(result, max)
+}
+
+func isTestPath(file string) bool {
+	slash := filepath.ToSlash(file)
+	lower := strings.ToLower(slash)
+	base := strings.ToLower(filepath.Base(filepath.FromSlash(file)))
+
+	switch {
+	case strings.HasSuffix(lower, "_test.go"),
+		strings.HasSuffix(lower, "_test.py"),
+		strings.HasPrefix(base, "test_") && strings.HasSuffix(lower, ".py"),
+		strings.Contains(base, ".test."),
+		strings.Contains(base, ".spec."):
+		return true
+	}
+
+	return false
+}
+
+func isDocPath(file string) bool {
+	slash := filepath.ToSlash(file)
+	lowerBase := strings.ToLower(filepath.Base(filepath.FromSlash(file)))
+
+	if strings.HasPrefix(lowerBase, "readme") {
+		return true
+	}
+
+	lower := strings.ToLower(slash)
+	if !strings.HasSuffix(lower, ".md") &&
+		!strings.HasSuffix(lower, ".markdown") &&
+		!strings.HasSuffix(lower, ".rst") {
+		return false
+	}
+
+	return !strings.Contains(slash, "/") || strings.HasPrefix(lower, "docs/")
 }

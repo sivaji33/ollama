@@ -7,7 +7,7 @@ func property(kind, description string) api.ToolProperty {
 }
 func tool(name, description string, required []string, properties map[string]api.ToolProperty) api.Tool {
 	props := api.NewToolPropertiesMap()
-	for _, key := range []string{"path", "query", "old_text", "new_text", "command"} {
+	for _, key := range []string{"path", "query", "old_text", "new_text", "command", "pattern", "content", "source", "destination", "edits"} {
 		if p, ok := properties[key]; ok {
 			props.Set(key, p)
 		}
@@ -17,9 +17,29 @@ func tool(name, description string, required []string, properties map[string]api
 func agentTools() api.Tools {
 	return api.Tools{
 		tool("search_files", "List or search files beneath the workspace root.", nil, map[string]api.ToolProperty{"query": property("string", "Optional case-insensitive path or content query.")}),
+		tool("list_files", "List workspace files matching an optional glob pattern.", nil, map[string]api.ToolProperty{"pattern": property("string", "Optional glob pattern such as \"internal/*.go\". Defaults to top-level entries.")}),
 		tool("read_file", "Read a text file beneath the workspace root.", []string{"path"}, map[string]api.ToolProperty{"path": property("string", "Workspace-relative file path.")}),
+		tool("write_file", "Create a new workspace file or atomically replace an existing file's full content. No-op writes are rejected.", []string{"path", "content"}, map[string]api.ToolProperty{"path": property("string", "Workspace-relative file path."), "content": property("string", "Complete new file content.")}),
 		tool("apply_patch", "Replace exact text once in a workspace file. No-op changes are rejected.", []string{"path", "old_text", "new_text"}, map[string]api.ToolProperty{"path": property("string", "Workspace-relative file path."), "old_text": property("string", "Exact text occurring once."), "new_text": property("string", "Replacement text.")}),
+		tool("multi_edit", "Apply several exact-text replacements to one file as a single all-or-nothing operation. Any invalid edit leaves the file unchanged.", []string{"path", "edits"}, map[string]api.ToolProperty{"path": property("string", "Workspace-relative file path."), "edits": editsProperty()}),
+		tool("delete_file", "Delete a workspace file. Directories and version-control internals are rejected.", []string{"path"}, map[string]api.ToolProperty{"path": property("string", "Workspace-relative file path.")}),
+		tool("move_file", "Move or rename a workspace file. Existing destinations are rejected.", []string{"source", "destination"}, map[string]api.ToolProperty{"source": property("string", "Workspace-relative source path."), "destination": property("string", "Workspace-relative destination path.")}),
 		tool("shell", "Run a workspace-restricted development command with bounded output and timeout.", []string{"command"}, map[string]api.ToolProperty{"command": property("string", "Development command to execute in the workspace.")}),
 		tool("git_diff", "Inspect the current workspace git diff.", nil, nil),
+	}
+}
+
+func editsProperty() api.ToolProperty {
+	entries := api.NewToolPropertiesMap()
+	entries.Set("old_text", property("string", "Exact text occurring once."))
+	entries.Set("new_text", property("string", "Replacement text."))
+	return api.ToolProperty{
+		Type:        api.PropertyType{"array"},
+		Description: "Ordered exact-text replacements; each old_text must match exactly once.",
+		Items: api.ToolProperty{
+			Type:       api.PropertyType{"object"},
+			Properties: entries,
+			Required:   []string{"old_text", "new_text"},
+		},
 	}
 }

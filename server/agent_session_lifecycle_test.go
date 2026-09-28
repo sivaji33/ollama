@@ -3,6 +3,7 @@ package server
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -87,11 +88,23 @@ func TestAgentSessionPersistsRealEngineEditLifecycleInRelativeOrder(t *testing.T
 		t.Fatalf("status = %d body=%s", recorder.Code, recorder.Body.String())
 	}
 
+	var accepted agentpkg.SessionSnapshot
+	if err := json.Unmarshal(recorder.Body.Bytes(), &accepted); err != nil {
+		t.Fatalf("decode accepted session: %v", err)
+	}
+	waitForPersistedSessionState(
+		t,
+		store,
+		accepted.ID,
+		agentpkg.SessionStateVerified,
+	)
+	waitForPersistedSessionEvent(t, store, accepted.ID, agentpkg.EventCompleted)
+
 	entries, err := os.ReadDir(store.Root())
 	if err != nil || len(entries) != 1 {
 		t.Fatalf("session directories = %v, err=%v", entries, err)
 	}
-	events, err := store.Events(entries[0].Name())
+	events, err := store.Events(accepted.ID)
 	if err != nil {
 		t.Fatalf("Events: %v", err)
 	}
@@ -173,7 +186,19 @@ func TestAgentSessionPersistsEngineLifecycleEventsInOrder(t *testing.T) {
 		)
 	}
 
-	events, err := store.Events(runner.request.SessionID)
+	var accepted agentpkg.SessionSnapshot
+	if err := json.Unmarshal(recorder.Body.Bytes(), &accepted); err != nil {
+		t.Fatalf("decode accepted session: %v", err)
+	}
+	waitForPersistedSessionState(
+		t,
+		store,
+		accepted.ID,
+		agentpkg.SessionStateVerified,
+	)
+	waitForPersistedSessionEvent(t, store, accepted.ID, agentpkg.EventCompleted)
+
+	events, err := store.Events(accepted.ID)
 	if err != nil {
 		t.Fatalf("Events: %v", err)
 	}

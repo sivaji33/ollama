@@ -16,10 +16,6 @@ Please include the following details in your report:
 
 While the maintainer team does its best to secure Ollama, users are encouraged to implement their own security best practices, such as:
 
-- Regularly updating to the latest version of Ollama
-- Securing access to hosted instances of Ollama
-- Monitoring systems for unusual activity
-
 ## Contact
 
 For any other questions or concerns related to security, please contact us at hello@ollama.com

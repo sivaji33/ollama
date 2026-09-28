@@ -614,7 +614,14 @@ func TestCodexAppManagedAuthLifecycle(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if got := info.Mode().Perm(); got != 0o600 {
+		if runtime.GOOS == "windows" {
+			// Windows has no Unix permission bits; Go reports 0666 for any
+			// writable file regardless of the requested 0600 mode. The mode is
+			// still honored on POSIX, where it is asserted below.
+			if info.Mode().Perm()&0o200 == 0 {
+				t.Fatalf("auth mode = %o, want owner-writable", info.Mode().Perm())
+			}
+		} else if got := info.Mode().Perm(); got != 0o600 {
 			t.Fatalf("auth mode = %o, want 600", got)
 		}
 

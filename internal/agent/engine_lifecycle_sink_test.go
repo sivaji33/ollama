@@ -156,6 +156,9 @@ func TestEngineDoesNotPublishDiffDetectedWithoutMeaningfulRealDiff(t *testing.T)
 			}}},
 		},
 		{Message: api.Message{Role: "assistant", Content: "done"}},
+		{Message: api.Message{Role: "assistant", Content: "still done"}},
+		{Message: api.Message{Role: "assistant", Content: "done again"}},
+		{Message: api.Message{Role: "assistant", Content: "done again"}},
 	}}
 
 	var published []SessionEventType

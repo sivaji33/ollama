@@ -4,6 +4,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"unicode"
 )
 
 var sourceExtensions = map[string]bool{
@@ -17,7 +18,7 @@ func HasMeaningfulSourceDiff(diff string) bool {
 	var removed, added []string
 	meaningful := false
 	flush := func() {
-		if !sourceExtensions[strings.ToLower(filepath.Ext(current))] {
+		if !isProductionSourcePath(current) {
 			removed, added = nil, nil
 			return
 		}
@@ -59,7 +60,7 @@ func HasMeaningfulSourceDiff(diff string) bool {
 }
 
 func isMeaningfulSourceEdit(path, oldText, newText string) bool {
-	if !sourceExtensions[strings.ToLower(filepath.Ext(path))] {
+	if !isProductionSourcePath(path) {
 		return false
 	}
 	normalize := func(text string) string {
@@ -74,4 +75,77 @@ func isMeaningfulSourceEdit(path, oldText, newText string) bool {
 		return strings.Join(kept, "\n")
 	}
 	return normalize(oldText) != normalize(newText)
+}
+
+func isProductionSourcePath(path string) bool {
+	normalizedPath := filepath.ToSlash(filepath.Clean(path))
+	parts := strings.Split(strings.ToLower(normalizedPath), "/")
+	for _, part := range parts[:len(parts)-1] {
+		if isTestDirectory(part) || isTemporaryPathComponent(part) {
+			return false
+		}
+	}
+
+	base := parts[len(parts)-1]
+	originalBase := filepath.Base(normalizedPath)
+	if isTestSourceName(base) || isConventionallyNamedTestSource(originalBase) || isTemporaryPathComponent(base) {
+		return false
+	}
+	return sourceExtensions[strings.ToLower(filepath.Ext(base))]
+}
+
+func isTestDirectory(name string) bool {
+	switch name {
+	case "test", "tests", "__tests__", "spec", "specs":
+		return true
+	default:
+		return false
+	}
+}
+
+func isTestSourceName(name string) bool {
+	stem := strings.TrimSuffix(name, filepath.Ext(name))
+	return strings.HasPrefix(stem, "test_") ||
+		strings.HasPrefix(stem, "test-") ||
+		strings.HasSuffix(stem, "_test") ||
+		strings.HasSuffix(stem, "_tests") ||
+		strings.HasSuffix(stem, "_spec") ||
+		strings.HasSuffix(stem, "_specs") ||
+		strings.HasSuffix(stem, ".test") ||
+		strings.HasSuffix(stem, ".tests") ||
+		strings.HasSuffix(stem, ".spec") ||
+		strings.HasSuffix(stem, ".specs")
+}
+
+func isConventionallyNamedTestSource(name string) bool {
+	stem := strings.TrimSuffix(name, filepath.Ext(name))
+	if strings.HasSuffix(stem, "Test") ||
+		strings.HasSuffix(stem, "Tests") ||
+		strings.HasSuffix(stem, "TestCase") ||
+		strings.HasSuffix(stem, "TestCases") {
+		return true
+	}
+	if strings.HasPrefix(stem, "Test") {
+		for _, r := range strings.TrimPrefix(stem, "Test") {
+			return unicode.IsUpper(r)
+		}
+	}
+	return false
+}
+
+func isTemporaryPathComponent(name string) bool {
+	if name == "tmp" || name == "temp" || name == "temporary" || strings.HasSuffix(name, "~") {
+		return true
+	}
+	for _, suffix := range []string{".tmp", ".temp", ".bak", ".backup", ".orig", ".rej", ".swp", ".swo", ".part"} {
+		if strings.HasSuffix(name, suffix) {
+			return true
+		}
+	}
+	for _, prefix := range []string{".agent-edit-", ".agent-write-", ".tmp-", ".temp-", "tmp-", "temp-", "tmp_", "temp_"} {
+		if strings.HasPrefix(name, prefix) {
+			return true
+		}
+	}
+	return strings.Contains(name, ".tmp.") || strings.Contains(name, ".temp.")
 }

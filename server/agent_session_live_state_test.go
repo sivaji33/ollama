@@ -3,6 +3,7 @@ package server
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -94,6 +95,14 @@ func TestAgentSessionUpdatesFirstPassStatesWhileRunIsActive(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatal("session request did not finish")
 	}
+
+	waitForPersistedSessionState(
+		t,
+		store,
+		sessionID,
+		agentpkg.SessionStateVerified,
+	)
+	waitForPersistedSessionEvent(t, store, sessionID, agentpkg.EventCompleted)
 
 	events, err := store.Events(sessionID)
 	if err != nil {
@@ -275,6 +284,13 @@ func TestAgentSessionUpdatesStateWhileRunIsActive(t *testing.T) {
 		t.Fatal("session request did not finish")
 	}
 
+	waitForPersistedSessionState(
+		t,
+		store,
+		sessionID,
+		agentpkg.SessionStateVerified,
+	)
+
 	events, err := store.Events(sessionID)
 	if err != nil {
 		t.Fatalf("Events: %v", err)
@@ -361,7 +377,18 @@ func TestAgentSessionDoesNotDuplicateLiveLifecycleEventsAfterCompletion(t *testi
 		t.Fatalf("status = %d body=%s", recorder.Code, recorder.Body.String())
 	}
 
-	events, err := store.Events(runner.sessionID)
+	var accepted agentpkg.SessionSnapshot
+	if err := json.Unmarshal(recorder.Body.Bytes(), &accepted); err != nil {
+		t.Fatalf("decode accepted session: %v", err)
+	}
+	waitForPersistedSessionState(
+		t,
+		store,
+		accepted.ID,
+		agentpkg.SessionStateVerified,
+	)
+
+	events, err := store.Events(accepted.ID)
 	if err != nil {
 		t.Fatalf("Events: %v", err)
 	}

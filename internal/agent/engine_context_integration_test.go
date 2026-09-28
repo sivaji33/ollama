@@ -62,6 +62,24 @@ func TestEngineFirstTurnUsesBoundedRepositoryContext(t *testing.T) {
 					Content: "done",
 				},
 			},
+			{
+				Message: api.Message{
+					Role:    "assistant",
+					Content: "still done",
+				},
+			},
+			{
+				Message: api.Message{
+					Role:    "assistant",
+					Content: "done again",
+				},
+			},
+			{
+				Message: api.Message{
+					Role:    "assistant",
+					Content: "done again",
+				},
+			},
 		},
 	}
 
@@ -86,9 +104,10 @@ func TestEngineFirstTurnUsesBoundedRepositoryContext(t *testing.T) {
 		t.Fatalf("real engine did not report repository context as built")
 	}
 
-	if len(chat.requests) != 1 {
+	// MaxSteps is deprecated; unproductive turns end at the stagnation limit.
+	if len(chat.requests) != 4 {
 		t.Fatalf(
-			"chat requests = %d, want 1",
+			"chat requests = %d, want 4",
 			len(chat.requests),
 		)
 	}
