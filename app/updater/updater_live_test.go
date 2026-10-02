@@ -23,6 +23,7 @@ import (
 //
 //	go test -tags updater_live -run TestLiveAppUpdate ./app/updater
 func TestLiveAppUpdate(t *testing.T) {
+	t.Setenv("OLLAMA_NO_CLOUD", "0")
 	const spoofedVersion = "0.20.0"
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)

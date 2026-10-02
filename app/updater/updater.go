@@ -27,6 +27,7 @@ import (
 	"github.com/ollama/ollama/app/store"
 	"github.com/ollama/ollama/app/version"
 	"github.com/ollama/ollama/auth"
+	"github.com/ollama/ollama/envconfig"
 )
 
 var (
@@ -52,6 +53,14 @@ type UpdateResponse struct {
 
 func (u *Updater) checkForUpdate(ctx context.Context) (bool, UpdateResponse) {
 	var updateResp UpdateResponse
+
+	// Local-only mode: the fork does not talk to the ollama.com release
+	// channel unless cloud is explicitly opted in. This also keeps the
+	// desktop app from replacing itself with an official Ollama build.
+	if envconfig.NoCloud() {
+		slog.Debug("skipping update check because cloud is disabled")
+		return false, updateResp
+	}
 
 	requestURL, err := url.Parse(UpdateCheckURLBase)
 	if err != nil {

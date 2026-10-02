@@ -3,17 +3,12 @@
 package tools
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
-	"net/http"
-	"net/url"
-	"strconv"
 	"strings"
-	"time"
 
-	"github.com/ollama/ollama/auth"
+	agenttools "github.com/ollama/ollama/internal/agent/tools"
 )
 
 type WebSearch struct{}
@@ -38,7 +33,7 @@ func (w *WebSearch) Name() string {
 }
 
 func (w *WebSearch) Description() string {
-	return "Search the web for real-time information using ollama.com web search API."
+	return "Search the web for real-time information using the built-in keyless internet search."
 }
 
 func (w *WebSearch) Prompt() string {
@@ -95,58 +90,21 @@ func (w *WebSearch) Execute(ctx context.Context, args map[string]any) (any, stri
 	return result, "", nil
 }
 
+// performWebSearch runs the shared keyless internet search. OwnBot talks to
+// the open web directly, so this tool does not require any Ollama service.
 func performWebSearch(ctx context.Context, query string, maxResults int) (*SearchResponse, error) {
-	if err := ensureCloudEnabledForTool(ctx, "web search is unavailable"); err != nil {
+	results, err := agenttools.SearchWeb(ctx, query, maxResults)
+	if err != nil {
 		return nil, err
 	}
 
-	reqBody := SearchRequest{Query: query, MaxResults: maxResults}
-
-	jsonBody, err := json.Marshal(reqBody)
-	if err != nil {
-		return nil, fmt.Errorf("failed to marshal request body: %w", err)
+	response := &SearchResponse{Results: make([]SearchResult, 0, len(results))}
+	for _, item := range results {
+		response.Results = append(response.Results, SearchResult{
+			Title:   item.Title,
+			URL:     item.URL,
+			Content: item.Snippet,
+		})
 	}
-
-	searchURL, err := url.Parse("https://ollama.com/api/web_search")
-	if err != nil {
-		return nil, fmt.Errorf("failed to parse search URL: %w", err)
-	}
-
-	q := searchURL.Query()
-	q.Add("ts", strconv.FormatInt(time.Now().Unix(), 10))
-	searchURL.RawQuery = q.Encode()
-
-	data := fmt.Appendf(nil, "%s,%s", http.MethodPost, searchURL.RequestURI())
-	signature, err := auth.Sign(ctx, data)
-	if err != nil {
-		return nil, fmt.Errorf("failed to sign request: %w", err)
-	}
-
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, searchURL.String(), bytes.NewBuffer(jsonBody))
-	if err != nil {
-		return nil, fmt.Errorf("failed to create request: %w", err)
-	}
-
-	req.Header.Set("Content-Type", "application/json")
-	if signature != "" {
-		req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", signature))
-	}
-
-	client := &http.Client{Timeout: 10 * time.Second}
-	resp, err := client.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("failed to execute search request: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("search API error (status %d)", resp.StatusCode)
-	}
-
-	var result SearchResponse
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		return nil, fmt.Errorf("failed to decode response: %w", err)
-	}
-
-	return &result, nil
+	return response, nil
 }

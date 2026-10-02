@@ -18,15 +18,27 @@ func TestCloudDisabled(t *testing.T) {
 		wantSource    string
 	}{
 		{
-			name:         "default enabled",
-			wantDisabled: false,
-			wantSource:   "none",
+			name:         "default disabled",
+			wantDisabled: true,
+			wantSource:   "default",
 		},
 		{
 			name:         "env disables cloud",
 			envValue:     "1",
 			wantDisabled: true,
 			wantSource:   "env",
+		},
+		{
+			name:         "env enables cloud",
+			envValue:     "0",
+			wantDisabled: false,
+			wantSource:   "none",
+		},
+		{
+			name:          "config enables cloud",
+			configContent: `{"disable_ollama_cloud": false}`,
+			wantDisabled:  false,
+			wantSource:    "none",
 		},
 		{
 			name:          "config disables cloud",
@@ -44,8 +56,8 @@ func TestCloudDisabled(t *testing.T) {
 		{
 			name:          "invalid config is ignored",
 			configContent: `{bad`,
-			wantDisabled:  false,
-			wantSource:    "none",
+			wantDisabled:  true,
+			wantSource:    "default",
 		},
 	}
 

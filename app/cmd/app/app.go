@@ -30,6 +30,7 @@ import (
 	"github.com/ollama/ollama/app/ui"
 	"github.com/ollama/ollama/app/updater"
 	"github.com/ollama/ollama/app/version"
+	internalcloud "github.com/ollama/ollama/internal/cloud"
 )
 
 var (
@@ -341,6 +342,13 @@ func main() {
 			slog.Warn("ollama server not ready, continuing anyway", "error", err)
 		}
 
+		// Account data lives on the official service; local-only mode skips the
+		// lookup instead of dialing out at startup.
+		if internalcloud.Disabled() {
+			slog.Debug("skipping account lookup because cloud is disabled")
+			return
+		}
+
 		if _, err := uiServer.UserData(ctx); err != nil {
 			slog.Warn("failed to load user data", "error", err)
 		}
@@ -466,6 +474,13 @@ func checkUserLoggedIn(uiServerPort int) bool {
 
 // handleConnectURLScheme fetches the connect URL and opens it in the browser
 func handleConnectURLScheme() {
+	// Sign-in happens on the official service, so it is unavailable until cloud
+	// access has been explicitly opted in.
+	if internalcloud.Disabled() {
+		slog.Warn(internalcloud.DisabledError("sign in is unavailable"))
+		return
+	}
+
 	if checkUserLoggedIn(uiServerPort) {
 		slog.Info("user is already logged in, opening app instead")
 		openUI("/")

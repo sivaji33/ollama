@@ -2,6 +2,16 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
+> **Update (removal of the workspace containment guard):** The guard described
+> in this plan was removed. The workspace root is now only the default working
+> directory and the base for relative paths; tools accept absolute paths,
+> traversal, and directory changes anywhere on the machine so the agent can
+> also act on installs outside the repository. Items below that call for
+> rejecting outside paths or traversal describe the original phase-1 scope and
+> no longer match the code. See
+> `docs/superpowers/specs/2026-09-12-agent-phase-1-design.md`, "Path and Shell
+> Access".
+
 **Goal:** Build a synchronous, workspace-restricted coding-agent endpoint using Ollama's existing chat/tool-call contract.
 
 **Architecture:** A focused engine depends on an injected Ollama chat boundary and a registry of canonical-root tools. A thin server adapter invokes the existing `ChatHandler` non-streaming, preserving its model scheduling and tool parsing.

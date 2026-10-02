@@ -34,7 +34,8 @@ type WebSearchResponse struct {
 	Results map[string][]WebSearchResult `json:"results"`
 }
 
-// BrowserWebSearch tool for searching the web using ollama.com search API
+// BrowserWebSearch tool for searching the open web with the built-in keyless
+// internet search (no Ollama service required).
 type BrowserWebSearch struct{}
 
 func (w *BrowserWebSearch) Name() string {
@@ -42,7 +43,7 @@ func (w *BrowserWebSearch) Name() string {
 }
 
 func (w *BrowserWebSearch) Description() string {
-	return "Search the web for real-time information using ollama.com search API."
+	return "Search the web for real-time information using the built-in keyless internet search."
 }
 
 func (w *BrowserWebSearch) Prompt() string {
@@ -106,7 +107,8 @@ func (w *BrowserWebSearch) Execute(ctx context.Context, args map[string]any) (an
 	return w.performWebSearch(ctx, queries, maxResults)
 }
 
-// performWebSearch handles the actual HTTP request to ollama.com search API
+// performWebSearch fetches results for each query from the shared keyless
+// internet search implementation.
 func (w *BrowserWebSearch) performWebSearch(ctx context.Context, queries []string, maxResults int) (*WebSearchResponse, error) {
 	response := &WebSearchResponse{Results: make(map[string][]WebSearchResult, len(queries))}
 

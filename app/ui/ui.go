@@ -33,6 +33,7 @@ import (
 	ollamaAuth "github.com/ollama/ollama/auth"
 	"github.com/ollama/ollama/cmd/launch"
 	"github.com/ollama/ollama/envconfig"
+	internalcloud "github.com/ollama/ollama/internal/cloud"
 	"github.com/ollama/ollama/manifest"
 	"github.com/ollama/ollama/types/model"
 	_ "github.com/tkrajina/typescriptify-golang-structs/typescriptify"
@@ -434,8 +435,14 @@ func userAgentHTTPClient(timeout time.Duration) *http.Client {
 	}
 }
 
-// doSelfSigned sends a self-signed request to the ollama.com API
+// doSelfSigned sends a self-signed request to the account API on the official
+// service. Local-only mode is the default, so these account calls are refused
+// until cloud access has been explicitly opted in.
 func (s *Server) doSelfSigned(ctx context.Context, method, path string) (*http.Response, error) {
+	if internalcloud.Disabled() {
+		return nil, errors.New(internalcloud.DisabledError("account access is unavailable"))
+	}
+
 	timestamp := strconv.FormatInt(time.Now().Unix(), 10)
 	// Form the string to sign: METHOD,PATH?ts=TIMESTAMP
 	signString := fmt.Sprintf("%s,%s?ts=%s", method, path, timestamp)

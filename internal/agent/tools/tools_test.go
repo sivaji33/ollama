@@ -10,21 +10,32 @@ import (
 	"time"
 )
 
-func TestWorkspaceRejectsPathsOutsideRoot(t *testing.T) {
+func TestWorkspaceAllowsPathsOutsideRoot(t *testing.T) {
 	root := t.TempDir()
 	w, err := NewWorkspace(root)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := w.Resolve(filepath.Join(root, "..", "outside.txt"), false); err == nil {
-		t.Fatal("expected outside absolute path to be rejected")
+	absolute, err := w.Resolve(filepath.Join(root, "..", "outside.txt"), false)
+	if err != nil {
+		t.Fatalf("outside absolute path: %v", err)
 	}
-	if _, err := w.Resolve(filepath.Join("..", "outside.txt"), false); err == nil {
-		t.Fatal("expected escaping traversal to be rejected")
+	traversal, err := w.Resolve(filepath.Join("..", "outside.txt"), false)
+	if err != nil {
+		t.Fatalf("escaping traversal: %v", err)
+	}
+	if absolute != traversal {
+		t.Fatalf("absolute resolved = %q, traversal resolved = %q", absolute, traversal)
+	}
+	if rel, relErr := filepath.Rel(root, absolute); relErr != nil || !strings.HasPrefix(rel, "..") {
+		t.Fatalf("resolved %q is not outside %q", absolute, root)
+	}
+	if got := filepath.Base(absolute); got != "outside.txt" {
+		t.Fatalf("base = %q", got)
 	}
 }
 
-func TestWorkspaceRejectsSymlinkEscape(t *testing.T) {
+func TestWorkspaceResolvesSymlinksOutsideRoot(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("symlink creation commonly requires Windows privilege")
 	}
@@ -33,8 +44,32 @@ func TestWorkspaceRejectsSymlinkEscape(t *testing.T) {
 		t.Fatal(err)
 	}
 	w, _ := NewWorkspace(root)
-	if _, err := w.Resolve("link/file.txt", false); err == nil {
-		t.Fatal("expected symlink escape rejection")
+	resolved, err := w.Resolve("link/file.txt", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want, err := filepath.EvalSymlinks(outside)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resolved != filepath.Join(want, "file.txt") {
+		t.Fatalf("resolved = %q, want %q", resolved, filepath.Join(want, "file.txt"))
+	}
+}
+
+func TestReadFileAllowsAbsolutePathOutsideRoot(t *testing.T) {
+	root := t.TempDir()
+	outsideFile := filepath.Join(t.TempDir(), "outside.go")
+	if err := os.WriteFile(outsideFile, []byte("package outside\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	w, _ := NewWorkspace(root)
+	got, err := w.ReadFile(outsideFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != "package outside\n" {
+		t.Fatalf("got %q", got)
 	}
 }
 
@@ -102,14 +137,44 @@ func TestShellRunsInWorkspaceAndCapturesExit(t *testing.T) {
 	}
 }
 
-func TestShellRejectsOutsidePathsAndTraversal(t *testing.T) {
+func TestShellAllowsPathsAndDirectoryChangesOutsideWorkspace(t *testing.T) {
 	root := t.TempDir()
+	outsideFile := filepath.Join(t.TempDir(), "outside.txt")
+	if err := os.WriteFile(outsideFile, []byte("outside-content\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	w, _ := NewWorkspace(root)
-	outside := filepath.Join(filepath.Dir(root), "outside.txt")
-	for _, command := range []string{"type " + outside, "cd ..", "Get-Content ../outside.txt"} {
-		if _, err := w.RunShell(context.Background(), command, time.Second, 1024); err == nil {
-			t.Fatalf("expected rejection for %q", command)
+	rel, err := filepath.Rel(root, outsideFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	readAbsolute, readTraversal := `cat "`+outsideFile+`"`, `cat "`+filepath.ToSlash(rel)+`"`
+	if runtime.GOOS == "windows" {
+		readAbsolute, readTraversal = `Get-Content "`+outsideFile+`"`, `Get-Content "`+filepath.ToSlash(rel)+`"`
+	}
+	for _, command := range []string{readAbsolute, readTraversal} {
+		result, err := w.RunShell(context.Background(), command, 10*time.Second, 4096)
+		if err != nil {
+			t.Fatalf("%q: %v", command, err)
 		}
+		if result.ExitCode != 0 || !strings.Contains(result.Stdout, "outside-content") {
+			t.Fatalf("%q: %+v", command, result)
+		}
+	}
+	cdCommand := "cd .. && pwd"
+	if runtime.GOOS == "windows" {
+		cdCommand = "cd ..; (Get-Location).Path"
+	}
+	result, err := w.RunShell(context.Background(), cdCommand, 10*time.Second, 4096)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantParent, err := filepath.EvalSymlinks(filepath.Dir(root))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.EqualFold(strings.TrimSpace(result.Stdout), wantParent) {
+		t.Fatalf("%q ran in %q, want %q", cdCommand, strings.TrimSpace(result.Stdout), wantParent)
 	}
 }
 

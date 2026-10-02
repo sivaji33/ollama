@@ -639,6 +639,10 @@ func casingShuffle(s string) string {
 
 func TestManifestCaseSensitivity(t *testing.T) {
 	t.Setenv("OLLAMA_MODELS", t.TempDir())
+	// Registry traffic is opt-in in this fork; this test exercises the real
+	// push/pull code paths against a locally redirected registry. The name is
+	// deliberately case-shuffled, so the opt-in must match case-insensitively.
+	t.Setenv("OLLAMA_REMOTES", "example")
 
 	r := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)

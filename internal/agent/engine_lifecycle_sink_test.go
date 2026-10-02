@@ -99,20 +99,21 @@ func TestEnginePublishesLifecycleEventsBeforeRunReturns(t *testing.T) {
 		EventVerificationPassed,
 	}
 
-	if len(published) != len(want) {
+	milestones := milestoneLifecycleEvents(published)
+	if len(milestones) != len(want) {
 		t.Fatalf(
-			"published events = %#v, want %d events",
-			published,
+			"lifecycle milestones = %#v, want %d milestone events",
+			milestones,
 			len(want),
 		)
 	}
 
 	for i, wantType := range want {
-		if published[i].Type != wantType {
+		if milestones[i].Type != wantType {
 			t.Fatalf(
-				"published event %d = %q, want %q; all=%#v",
+				"milestone event %d = %q, want %q; all=%#v",
 				i,
-				published[i].Type,
+				milestones[i].Type,
 				wantType,
 				published,
 			)
@@ -137,6 +138,30 @@ func TestEnginePublishesLifecycleEventsBeforeRunReturns(t *testing.T) {
 			)
 		}
 	}
+}
+
+// milestoneLifecycleEventTypes is the edit -> diff -> verify -> repair shape
+// the engine must always publish, in order. The full stream also carries
+// model-turn, tool-call, and tool-result progress events, which are asserted
+// separately.
+var milestoneLifecycleEventTypes = map[SessionEventType]bool{
+	EventEditingStarted:     true,
+	EventDiffDetected:       true,
+	EventVerificationStart:  true,
+	EventVerificationFailed: true,
+	EventRepairStarted:      true,
+	EventRepairCompleted:    true,
+	EventVerificationPassed: true,
+}
+
+func milestoneLifecycleEvents(events []SessionEvent) []SessionEvent {
+	milestones := make([]SessionEvent, 0, len(events))
+	for _, event := range events {
+		if milestoneLifecycleEventTypes[event.Type] {
+			milestones = append(milestones, event)
+		}
+	}
+	return milestones
 }
 
 func TestEngineDoesNotPublishDiffDetectedWithoutMeaningfulRealDiff(t *testing.T) {

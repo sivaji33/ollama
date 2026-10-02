@@ -10,6 +10,11 @@ import (
 
 const maxFileBytes = 256 * 1024
 
+// Workspace selects the default working directory and the base for relative
+// paths. It is deliberately not a containment boundary: absolute paths,
+// traversal, and symlinks anywhere on the machine resolve normally so the
+// agent can also inspect and update files outside the repository, such as an
+// installed program it was asked to upgrade.
 type Workspace struct{ root string }
 
 func NewWorkspace(root string) (*Workspace, error) {
@@ -36,6 +41,9 @@ func NewWorkspace(root string) (*Workspace, error) {
 
 func (w *Workspace) Root() string { return w.root }
 
+// Resolve returns the cleaned absolute path for path. Relative paths resolve
+// against the workspace root; absolute paths are used as given. No path is
+// rejected for being outside the workspace.
 func (w *Workspace) Resolve(path string, mustExist bool) (string, error) {
 	if w == nil || w.root == "" {
 		return "", errors.New("invalid workspace")
@@ -51,15 +59,9 @@ func (w *Workspace) Resolve(path string, mustExist bool) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	if !contained(w.root, candidate) {
-		return "", fmt.Errorf("path %q is outside workspace", path)
-	}
 	resolved, err := resolveExistingPrefix(candidate)
 	if err != nil {
 		return "", err
-	}
-	if !contained(w.root, resolved) {
-		return "", fmt.Errorf("path %q escapes workspace through a symlink", path)
 	}
 	if mustExist {
 		if _, err := os.Stat(resolved); err != nil {
@@ -67,11 +69,6 @@ func (w *Workspace) Resolve(path string, mustExist bool) (string, error) {
 		}
 	}
 	return resolved, nil
-}
-
-func contained(root, path string) bool {
-	rel, err := filepath.Rel(root, path)
-	return err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) && !filepath.IsAbs(rel)
 }
 
 func resolveExistingPrefix(path string) (string, error) {

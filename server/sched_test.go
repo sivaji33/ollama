@@ -22,6 +22,10 @@ import (
 
 func TestMain(m *testing.M) {
 	os.Setenv("OLLAMA_DEBUG", "1")
+	// This fork is local-only unless cloud is opted in, so these tests opt in
+	// explicitly to exercise the cloud-enabled behavior they were written for.
+	// Tests that cover disabled behavior still set OLLAMA_NO_CLOUD=1.
+	os.Setenv("OLLAMA_NO_CLOUD", "0")
 	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelDebug}))
 	slog.SetDefault(logger)
 	os.Exit(m.Run())

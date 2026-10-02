@@ -29,7 +29,7 @@ func TestWriteFileCreatesNewFileAndRewritesExisting(t *testing.T) {
 	}
 }
 
-func TestWriteFileRejectsNoopOversizeAndEscape(t *testing.T) {
+func TestWriteFileRejectsNoopAndOversize(t *testing.T) {
 	root := t.TempDir()
 	if err := os.WriteFile(filepath.Join(root, "main.go"), []byte("package main\n"), 0o600); err != nil {
 		t.Fatal(err)
@@ -41,8 +41,29 @@ func TestWriteFileRejectsNoopOversizeAndEscape(t *testing.T) {
 	if _, err := w.WriteFile("big.go", strings.Repeat("x", maxFileBytes+1)); err == nil {
 		t.Fatal("expected oversize rejection")
 	}
-	if _, err := w.WriteFile(filepath.Join("..", "outside.txt"), "x"); err == nil {
-		t.Fatal("expected traversal rejection")
+}
+
+func TestWriteFileAllowsPathsOutsideRoot(t *testing.T) {
+	root := t.TempDir()
+	outsideDir := t.TempDir()
+	outsideFile := filepath.Join(outsideDir, "installed.txt")
+	w, _ := NewWorkspace(root)
+	got, err := w.WriteFile(outsideFile, "upgraded\n")
+	if err != nil || got != "created "+outsideFile {
+		t.Fatalf("absolute write: %q %v", got, err)
+	}
+	if b, err := os.ReadFile(outsideFile); err != nil || string(b) != "upgraded\n" {
+		t.Fatalf("read back: %q %v", b, err)
+	}
+	traversal, err := w.WriteFile(filepath.Join("..", filepath.Base(outsideDir), "traversal.txt"), "x\n")
+	if err != nil {
+		t.Fatalf("traversal write: %v", err)
+	}
+	if !strings.Contains(traversal, "traversal.txt") {
+		t.Fatalf("traversal result = %q", traversal)
+	}
+	if b, err := os.ReadFile(filepath.Join(outsideDir, "traversal.txt")); err != nil || string(b) != "x\n" {
+		t.Fatalf("traversal read back: %q %v", b, err)
 	}
 }
 
@@ -96,6 +117,27 @@ func TestListFilesBoundsResults(t *testing.T) {
 	}
 	if !strings.Contains(got, "... and 3 more") {
 		t.Fatalf("got %q", got)
+	}
+}
+
+func TestListFilesAllowsPatternOutsideRoot(t *testing.T) {
+	root := t.TempDir()
+	outsideDir := t.TempDir()
+	outsideFile := filepath.Join(outsideDir, "outside.go")
+	if err := os.WriteFile(outsideFile, []byte("package outside\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	w, _ := NewWorkspace(root)
+	got, err := w.ListFiles(filepath.Join(outsideDir, "*.go"), 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rel, err := filepath.Rel(root, outsideFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != filepath.ToSlash(rel) {
+		t.Fatalf("got %q, want %q", got, filepath.ToSlash(rel))
 	}
 }
 

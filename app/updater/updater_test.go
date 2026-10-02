@@ -68,6 +68,7 @@ func TestUpdateStagePathHashesETag(t *testing.T) {
 }
 
 func TestIsNewReleaseAvailable(t *testing.T) {
+	t.Setenv("OLLAMA_NO_CLOUD", "0")
 	slog.SetLogLoggerLevel(slog.LevelDebug)
 	var server *httptest.Server
 	server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -222,6 +223,7 @@ func (u *Updater) waitDownloadIdle() {
 }
 
 func TestBackgroundCheckerSkipsAlreadyStagedETagDownload(t *testing.T) {
+	t.Setenv("OLLAMA_NO_CLOUD", "0")
 	UpdateStageDir = t.TempDir()
 	oldInstaller := Installer
 	oldVerifyDownload := VerifyDownload
@@ -346,6 +348,7 @@ func TestBackgroundCheckerSkipsAlreadyStagedETagDownload(t *testing.T) {
 }
 
 func TestBackgoundChecker(t *testing.T) {
+	t.Setenv("OLLAMA_NO_CLOUD", "0")
 	UpdateStageDir = t.TempDir()
 	haveUpdate := false
 	verified := false
@@ -419,6 +422,7 @@ func TestBackgoundChecker(t *testing.T) {
 }
 
 func TestAutoUpdateDisabledSkipsDownload(t *testing.T) {
+	t.Setenv("OLLAMA_NO_CLOUD", "0")
 	UpdateStageDir = t.TempDir()
 	var downloadAttempted atomic.Bool
 	done := make(chan struct{})
@@ -480,6 +484,7 @@ func TestAutoUpdateDisabledSkipsDownload(t *testing.T) {
 }
 
 func TestAutoUpdateReenabledDownloadsUpdate(t *testing.T) {
+	t.Setenv("OLLAMA_NO_CLOUD", "0")
 	UpdateStageDir = t.TempDir()
 	var downloadAttempted atomic.Bool
 	callbackCalled := make(chan struct{}, 1)
@@ -559,6 +564,7 @@ func TestAutoUpdateReenabledDownloadsUpdate(t *testing.T) {
 }
 
 func TestCancelOngoingDownload(t *testing.T) {
+	t.Setenv("OLLAMA_NO_CLOUD", "0")
 	UpdateStageDir = t.TempDir()
 	downloadStarted := make(chan struct{})
 	downloadCancelled := make(chan struct{})
@@ -631,6 +637,7 @@ func TestCancelOngoingDownload(t *testing.T) {
 }
 
 func TestTriggerImmediateCheck(t *testing.T) {
+	t.Setenv("OLLAMA_NO_CLOUD", "0")
 	UpdateStageDir = t.TempDir()
 	checkCount := atomic.Int32{}
 	checkDone := make(chan struct{}, 10)

@@ -141,6 +141,9 @@ func TestEngineRetriesTextOnlyResponseBeforeAnyEdit(t *testing.T) {
 }
 
 func TestEngineBoundsFollowupConversationAndDoesNotRepeatRepositoryInventory(t *testing.T) {
+	// The operator opted into a bounded replay window for this run.
+	t.Setenv("OLLAMA_AGENT_CONVERSATION_MESSAGES", "12")
+
 	root := initRepo(t)
 	readCall := func(id string) api.ChatResponse {
 		return api.ChatResponse{Message: api.Message{Role: "assistant", ToolCalls: []api.ToolCall{{
@@ -167,8 +170,8 @@ func TestEngineBoundsFollowupConversationAndDoesNotRepeatRepositoryInventory(t *
 		if strings.Contains(request.Messages[1].Content, "Tracked files:") {
 			t.Fatalf("followup %d repeated repository inventory", i+2)
 		}
-		if len(request.Messages) > maxAgentConversationMessages {
-			t.Fatalf("followup %d messages = %d, want <= %d", i+2, len(request.Messages), maxAgentConversationMessages)
+		if limit := agentConversationLimit(); len(request.Messages) > limit {
+			t.Fatalf("followup %d messages = %d, want <= %d", i+2, len(request.Messages), limit)
 		}
 	}
 }
@@ -235,13 +238,13 @@ func TestAgentFirstRequestRequiresNativeToolUse(t *testing.T) {
 	if req.Stream == nil || *req.Stream {
 		t.Fatal("agent model request must disable streaming")
 	}
-	if got := req.Options["num_ctx"]; got != agentContextWindow {
-		t.Fatalf("agent num_ctx = %v, want %d", got, agentContextWindow)
+	if want := agentContextWindowLimit(); req.Options["num_ctx"] != want {
+		t.Fatalf("agent num_ctx = %v, want %d", req.Options["num_ctx"], want)
 	}
 	if req.Truncate == nil || !*req.Truncate {
 		t.Fatal("agent request must enable bounded server-side truncation")
 	}
-	wantNames := []string{"search_files", "list_files", "read_file", "write_file", "apply_patch", "multi_edit", "delete_file", "move_file", "shell", "git_diff"}
+	wantNames := []string{"search_files", "list_files", "read_file", "write_file", "apply_patch", "multi_edit", "delete_file", "move_file", "shell", "git_diff", "web_search", "web_fetch"}
 	if len(req.Tools) != len(wantNames) {
 		t.Fatalf("tools = %d, want %d", len(req.Tools), len(wantNames))
 	}
@@ -251,7 +254,7 @@ func TestAgentFirstRequestRequiresNativeToolUse(t *testing.T) {
 		}
 	}
 	system := req.Messages[0].Content
-	for _, phrase := range []string{"modification task", "native", "assistant prose", "json printed as assistant content", "meaningful source edit", "git_diff", "verification"} {
+	for _, phrase := range []string{"modification task", "native", "assistant prose", "json printed as assistant content", "meaningful source edit", "git_diff", "verification", "web_search", "web_fetch", "internet"} {
 		if !strings.Contains(strings.ToLower(system), phrase) {
 			t.Errorf("system prompt missing %q: %s", phrase, system)
 		}

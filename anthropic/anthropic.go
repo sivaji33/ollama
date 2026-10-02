@@ -17,8 +17,7 @@ import (
 	"time"
 
 	"github.com/ollama/ollama/api"
-	"github.com/ollama/ollama/auth"
-	internalcloud "github.com/ollama/ollama/internal/cloud"
+	agenttools "github.com/ollama/ollama/internal/agent/tools"
 	"github.com/ollama/ollama/logutil"
 )
 
@@ -1214,12 +1213,16 @@ type OllamaWebSearchResponse struct {
 	Results []OllamaWebSearchResult `json:"results"`
 }
 
-var WebSearchEndpoint = "https://ollama.com/api/web_search"
+// WebSearchEndpoint optionally overrides the web search backend with an
+// HTTP JSON search API of your own (for example a self-hosted SearXNG or a
+// corporate search gateway). It has no default: leaving it empty uses the
+// built-in local internet search (keyless DuckDuckGo HTML, overridable with
+// OLLAMA_WEB_SEARCH_URL), so web search never depends on an Ollama service.
+var WebSearchEndpoint = ""
 
 func WebSearch(ctx context.Context, query string, maxResults int) (*OllamaWebSearchResponse, error) {
-	if internalcloud.Disabled() {
-		logutil.TraceContext(ctx, "anthropic: web search blocked", "reason", "cloud_disabled")
-		return nil, errors.New(internalcloud.DisabledError("web search is unavailable"))
+	if strings.TrimSpace(WebSearchEndpoint) == "" {
+		return localWebSearch(ctx, query, maxResults)
 	}
 
 	if maxResults <= 0 {
@@ -1253,25 +1256,12 @@ func WebSearch(ctx context.Context, query string, maxResults int) (*OllamaWebSea
 	q.Set("ts", strconv.FormatInt(time.Now().Unix(), 10))
 	searchURL.RawQuery = q.Encode()
 
-	signature := ""
-	if strings.EqualFold(searchURL.Hostname(), "ollama.com") {
-		challenge := fmt.Sprintf("%s,%s", http.MethodPost, searchURL.RequestURI())
-		signature, err = auth.Sign(ctx, []byte(challenge))
-		if err != nil {
-			return nil, fmt.Errorf("failed to sign web search request: %w", err)
-		}
-	}
-	logutil.TraceContext(ctx, "anthropic: web search auth", "signed", signature != "")
-
 	req, err := http.NewRequestWithContext(ctx, "POST", searchURL.String(), bytes.NewReader(body))
 	if err != nil {
 		return nil, fmt.Errorf("failed to create web search request: %w", err)
 	}
 
 	req.Header.Set("Content-Type", "application/json")
-	if signature != "" {
-		req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", signature))
-	}
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
@@ -1292,6 +1282,28 @@ func WebSearch(ctx context.Context, query string, maxResults int) (*OllamaWebSea
 	logutil.TraceContext(ctx, "anthropic: web search results", "count", len(searchResp.Results))
 
 	return &searchResp, nil
+}
+
+// localWebSearch runs the shared, keyless OwnBot internet search so Anthropic
+// and Responses web search keep working without any Ollama service.
+func localWebSearch(ctx context.Context, query string, maxResults int) (*OllamaWebSearchResponse, error) {
+	if maxResults <= 0 {
+		maxResults = 5
+	}
+	results, err := agenttools.SearchWeb(ctx, query, maxResults)
+	if err != nil {
+		return nil, fmt.Errorf("local web search failed: %w", err)
+	}
+	resp := &OllamaWebSearchResponse{Results: make([]OllamaWebSearchResult, 0, len(results))}
+	for _, result := range results {
+		resp.Results = append(resp.Results, OllamaWebSearchResult{
+			Title:   result.Title,
+			URL:     result.URL,
+			Content: result.Snippet,
+		})
+	}
+	logutil.TraceContext(ctx, "anthropic: local web search results", "count", len(resp.Results))
+	return resp, nil
 }
 
 func ConvertOllamaToAnthropicResults(ollamaResults *OllamaWebSearchResponse) []WebSearchResult {

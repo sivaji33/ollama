@@ -8,8 +8,10 @@ import (
 	"strings"
 )
 
-// ListFiles returns workspace-relative regular files matching a glob pattern,
-// bounded to limit entries. Version-control and build directories are skipped.
+// ListFiles returns regular files matching a glob pattern, bounded to limit
+// entries. Relative patterns resolve against the workspace root; absolute
+// patterns anywhere on the machine are allowed. Version-control and build
+// directories are skipped.
 func (w *Workspace) ListFiles(pattern string, limit int) (string, error) {
 	if limit <= 0 || limit > 200 {
 		limit = 100
@@ -18,17 +20,14 @@ func (w *Workspace) ListFiles(pattern string, limit int) (string, error) {
 	if pattern == "" {
 		pattern = "*"
 	}
-	// Containment is validated lexically: glob patterns contain metacharacters
-	// that must not be resolved through the filesystem before matching.
+	// Glob patterns contain metacharacters that must not be resolved through
+	// the filesystem before matching, so the pattern is only made absolute.
 	if !filepath.IsAbs(pattern) {
 		pattern = filepath.Join(w.root, pattern)
 	}
 	candidate, err := filepath.Abs(pattern)
 	if err != nil {
 		return "", err
-	}
-	if !contained(w.root, candidate) {
-		return "", fmt.Errorf("pattern %q is outside workspace", pattern)
 	}
 	matches, err := filepath.Glob(candidate)
 	if err != nil {
@@ -37,10 +36,10 @@ func (w *Workspace) ListFiles(pattern string, limit int) (string, error) {
 	sort.Strings(matches)
 	var listed []string
 	for _, match := range matches {
-		// Each match is re-resolved through symlinks so escapes are caught
-		// before anything is listed.
+		// Each match is re-resolved through symlinks so a symlinked directory
+		// still lists the real files it points at.
 		resolved, resolveErr := filepath.EvalSymlinks(match)
-		if resolveErr != nil || !contained(w.root, resolved) {
+		if resolveErr != nil {
 			continue
 		}
 		info, statErr := os.Stat(resolved)
@@ -62,9 +61,9 @@ func (w *Workspace) ListFiles(pattern string, limit int) (string, error) {
 	return strings.Join(listed, "\n"), nil
 }
 
-// skippedDir reports whether a workspace-relative path traverses a directory
-// that is never useful to the agent: version control, build output, or
-// dependency caches.
+// skippedDir reports whether a root-relative path traverses a directory that
+// is never useful to the agent: version control, build output, or dependency
+// caches.
 func skippedDir(rel string) bool {
 	for _, segment := range strings.Split(rel, "/") {
 		switch segment {

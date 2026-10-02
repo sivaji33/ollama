@@ -15,7 +15,9 @@ import (
 const serverConfigFilename = "server.json"
 
 type serverConfig struct {
-	DisableOllamaCloud bool `json:"disable_ollama_cloud,omitempty"`
+	// DisableOllamaCloud is a pointer so an explicit false (cloud opted in) can
+	// be told apart from the field being absent (fork default: local-only).
+	DisableOllamaCloud *bool `json:"disable_ollama_cloud,omitempty"`
 }
 
 // CloudDisabled returns whether cloud features should be disabled.
@@ -26,19 +28,37 @@ func (s *Store) CloudDisabled() (bool, error) {
 }
 
 // CloudStatus returns whether cloud is disabled and the source of that decision.
-// Source is one of: "none", "env", "config", "both".
+// Source is one of: "default", "none", "env", "config", or "both".
+//
+// Like the server, the desktop app is local-only by default: when neither
+// OLLAMA_NO_CLOUD nor ~/.ollama/server.json sets a value, cloud stays off so
+// the app does not connect to ollama.com on its own.
 func (s *Store) CloudStatus() (bool, string, error) {
 	if err := s.ensureDB(); err != nil {
 		return false, "", err
 	}
 
-	configDisabled, err := readServerConfigCloudDisabled()
+	configDisabled, configSet, err := readServerConfigCloudDisabled()
 	if err != nil {
 		return false, "", err
 	}
 
+	envSet := envconfig.Var("OLLAMA_NO_CLOUD") != ""
 	envDisabled := envconfig.NoCloudEnv()
-	return envDisabled || configDisabled, cloudStatusSource(envDisabled, configDisabled), nil
+
+	switch {
+	case envDisabled:
+		if configSet && configDisabled {
+			return true, "both", nil
+		}
+		return true, "env", nil
+	case configSet && configDisabled:
+		return true, "config", nil
+	case envSet || configSet:
+		return false, "none", nil
+	default:
+		return true, "default", nil
+	}
 }
 
 // SetCloudEnabled writes the cloud setting to ~/.ollama/server.json.
@@ -84,26 +104,27 @@ func setCloudEnabled(enabled bool) error {
 	return nil
 }
 
-func readServerConfigCloudDisabled() (bool, error) {
+func readServerConfigCloudDisabled() (disabled bool, set bool, err error) {
 	configPath, err := serverConfigPath()
 	if err != nil {
-		return false, err
+		return false, false, err
 	}
 
 	data, err := os.ReadFile(configPath)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
-			return false, nil
+			return false, false, nil
 		}
-		return false, fmt.Errorf("read server config: %w", err)
+		return false, false, fmt.Errorf("read server config: %w", err)
 	}
 
 	var cfg serverConfig
-	// Invalid or unexpected JSON should not block startup; treat as default.
-	if json.Unmarshal(data, &cfg) == nil {
-		return cfg.DisableOllamaCloud, nil
+	// Invalid or unexpected JSON should not block startup; treat the field as
+	// unset so the local-only default applies.
+	if json.Unmarshal(data, &cfg) != nil || cfg.DisableOllamaCloud == nil {
+		return false, false, nil
 	}
-	return false, nil
+	return *cfg.DisableOllamaCloud, true, nil
 }
 
 func serverConfigPath() (string, error) {
@@ -112,17 +133,4 @@ func serverConfigPath() (string, error) {
 		return "", fmt.Errorf("resolve home directory: %w", err)
 	}
 	return filepath.Join(home, ".ollama", serverConfigFilename), nil
-}
-
-func cloudStatusSource(envDisabled bool, configDisabled bool) string {
-	switch {
-	case envDisabled && configDisabled:
-		return "both"
-	case envDisabled:
-		return "env"
-	case configDisabled:
-		return "config"
-	default:
-		return "none"
-	}
 }

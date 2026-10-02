@@ -935,6 +935,9 @@ func PruneLayers() error {
 
 func PushModel(ctx context.Context, name string, regOpts *registryOptions, fn func(api.ProgressResponse)) error {
 	n := model.ParseName(name)
+	if err := allowRegistryHost(n); err != nil {
+		return err
+	}
 	fn(api.ProgressResponse{Status: "retrieving manifest"})
 
 	if n.ProtocolScheme == "http" && !regOpts.Insecure {
@@ -1002,6 +1005,15 @@ func PushModel(ctx context.Context, name string, regOpts *registryOptions, fn fu
 
 func PullModel(ctx context.Context, name string, regOpts *registryOptions, fn func(api.ProgressResponse)) error {
 	n := model.ParseName(name)
+	if err := allowRegistryHost(n); err != nil {
+		// A model that already exists locally needs no registry traffic, so
+		// keep "pull" working as a local verification no-op.
+		if !localModelComplete(n) {
+			return err
+		}
+		fn(api.ProgressResponse{Status: "success"})
+		return nil
+	}
 
 	// build deleteMap to prune unused layers
 	deleteMap := make(map[string]struct{})

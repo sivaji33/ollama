@@ -9,7 +9,9 @@ import (
 
 const (
 	// Deprecated: retained for source compatibility. The engine no longer
-	// enforces fixed total-step or repair-attempt limits.
+	// enforces fixed total-step, repair-attempt, command-timeout, or output
+	// limits. Command budgets now come from the operator-tunable environment
+	// variables documented in limits.go.
 	DefaultMaxSteps       = 12
 	MaxRepairAttempts     = 2
 	DefaultCommandTimeout = 2 * time.Minute

@@ -27,6 +27,9 @@ func Host() *url.URL {
 	switch {
 	case !ok:
 		scheme, hostport = "http", s
+		// Only an explicitly configured ollama.com host is upgraded to https;
+		// nothing in OwnBot points at that host by default, and requests to it
+		// are unsigned unless cloud access is explicitly opted in.
 		if s == "ollama.com" {
 			scheme, hostport = "https", "ollama.com:443"
 		}
@@ -163,13 +166,17 @@ func LoadTimeout() (loadTimeout time.Duration) {
 	return loadTimeout
 }
 
+// Remotes returns the remote model registries OwnBot may pull models from.
+// The fork ships with no registry: models come from local storage only unless
+// OLLAMA_REMOTES explicitly opts in to one or more registries (comma
+// separated). This keeps pulls and cloud model resolution off the official
+// ollama.com services by default.
 func Remotes() []string {
 	var r []string
-	raw := strings.TrimSpace(Var("OLLAMA_REMOTES"))
-	if raw == "" {
-		r = []string{"ollama.com"}
-	} else {
-		r = strings.Split(raw, ",")
+	for _, remote := range strings.Split(Var("OLLAMA_REMOTES"), ",") {
+		if remote = strings.TrimSpace(remote); remote != "" {
+			r = append(r, remote)
+		}
 	}
 	return r
 }
@@ -377,8 +384,17 @@ func Var(key string) string {
 }
 
 // serverConfigData holds the parsed fields from ~/.ollama/server.json.
+// DisableOllamaCloud is a pointer so an explicit false (cloud opted in) can be
+// told apart from the field being absent (fork default: local-only).
 type serverConfigData struct {
-	DisableOllamaCloud bool `json:"disable_ollama_cloud,omitempty"`
+	DisableOllamaCloud *bool `json:"disable_ollama_cloud,omitempty"`
+}
+
+func (c serverConfigData) disableOllamaCloud() (disabled bool, set bool) {
+	if c.DisableOllamaCloud == nil {
+		return false, false
+	}
+	return *c.DisableOllamaCloud, true
 }
 
 var (
@@ -434,23 +450,38 @@ func ReloadServerConfig() {
 	loadServerConfig()
 }
 
-// NoCloud returns true if Ollama cloud features are disabled,
-// checking both the OLLAMA_NO_CLOUD environment variable and
-// the disable_ollama_cloud field in ~/.ollama/server.json.
+// noCloudEnv reports the parsed OLLAMA_NO_CLOUD value and whether the variable
+// was set at all. Unparseable values count as set and disabled.
+func noCloudEnv() (disabled bool, set bool) {
+	if Var("OLLAMA_NO_CLOUD") == "" {
+		return false, false
+	}
+	return NoCloudEnv(), true
+}
+
+// NoCloud returns true if Ollama cloud features are disabled.
+//
+// This fork is local-only by default: when neither OLLAMA_NO_CLOUD nor
+// ~/.ollama/server.json sets a value, cloud features stay off so the server
+// never connects to ollama.com on its own. Set OLLAMA_NO_CLOUD=0 (or
+// "disable_ollama_cloud": false in server.json) to opt back in explicitly.
 func NoCloud() bool {
-	if NoCloudEnv() {
-		return true
+	if disabled, set := noCloudEnv(); set {
+		return disabled
 	}
 	loadServerConfig()
-	return cachedServerConfig().DisableOllamaCloud
+	if disabled, set := cachedServerConfig().disableOllamaCloud(); set {
+		return disabled
+	}
+	return true
 }
 
 // NoCloudSource returns the source of the cloud-disabled decision.
-// Returns "none", "env", "config", or "both".
+// Returns "default", "env", "config", "both", or "none".
 func NoCloudSource() string {
-	envDisabled := NoCloudEnv()
+	envDisabled, envSet := noCloudEnv()
 	loadServerConfig()
-	configDisabled := cachedServerConfig().DisableOllamaCloud
+	configDisabled, configSet := cachedServerConfig().disableOllamaCloud()
 
 	switch {
 	case envDisabled && configDisabled:
@@ -459,7 +490,9 @@ func NoCloudSource() string {
 		return "env"
 	case configDisabled:
 		return "config"
-	default:
+	case envSet || configSet:
 		return "none"
+	default:
+		return "default"
 	}
 }

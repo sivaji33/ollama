@@ -370,6 +370,12 @@ func TestNoCloud(t *testing.T) {
 	}{
 		{
 			name:         "neither env nor config",
+			wantDisabled: true,
+			wantSource:   "default",
+		},
+		{
+			name:         "env enables cloud",
+			envValue:     "0",
 			wantDisabled: false,
 			wantSource:   "none",
 		},
@@ -401,13 +407,13 @@ func TestNoCloud(t *testing.T) {
 		{
 			name:          "invalid config ignored",
 			configContent: `{invalid json`,
-			wantDisabled:  false,
-			wantSource:    "none",
+			wantDisabled:  true,
+			wantSource:    "default",
 		},
 		{
 			name:         "no config file",
-			wantDisabled: false,
-			wantSource:   "none",
+			wantDisabled: true,
+			wantSource:   "default",
 		},
 	}
 

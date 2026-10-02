@@ -4,10 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
-	"fmt"
 	"os/exec"
-	"path/filepath"
-	"regexp"
 	"runtime"
 	"strings"
 	"sync"
@@ -21,41 +18,9 @@ type ShellResult struct {
 	Truncated bool   `json:"truncated"`
 }
 
-var (
-	pathTokenRE = regexp.MustCompile(`(?i)(?:^|[\s"'=,(])([a-z]:[\\/][^\s"',;|)]+|/[A-Za-z0-9_.-][^\s"',;|)]*)`)
-	cdRE        = regexp.MustCompile(`(?i)(?:^|[;&|]\s*|\n\s*)(?:cd|chdir|set-location|sl|pushd|push-location)\s+(?:-[A-Za-z]+\s+)?([^;&|\r\n]+)`)
-)
-
-func (w *Workspace) validateCommand(command string) error {
-	if strings.TrimSpace(command) == "" {
-		return errors.New("command is required")
-	}
-	for _, token := range strings.Fields(command) {
-		clean := strings.Trim(token, `"'(),;`)
-		if strings.Contains(filepath.ToSlash(clean), "../") || clean == ".." {
-			return fmt.Errorf("command contains escaping traversal: %q", clean)
-		}
-	}
-	for _, match := range pathTokenRE.FindAllStringSubmatch(command, -1) {
-		p := strings.TrimSpace(match[1])
-		if runtime.GOOS != "windows" && regexp.MustCompile(`^[A-Za-z]:`).MatchString(p) {
-			return fmt.Errorf("outside-workspace absolute path rejected: %q", p)
-		}
-		if _, err := w.Resolve(p, false); err != nil {
-			return fmt.Errorf("outside-workspace absolute path rejected: %q", p)
-		}
-	}
-	for _, match := range cdRE.FindAllStringSubmatch(command, -1) {
-		p := strings.Trim(strings.TrimSpace(match[1]), `"'`)
-		if _, err := w.Resolve(p, false); err != nil {
-			return fmt.Errorf("directory change rejected: %w", err)
-		}
-	}
-	return nil
-}
-
 type outputBudget struct {
 	mu             sync.Mutex
+	unlimited      bool
 	remaining      int
 	truncated      bool
 	stdout, stderr bytes.Buffer
@@ -70,7 +35,7 @@ func (w budgetWriter) Write(p []byte) (int, error) {
 	defer w.budget.mu.Unlock()
 	n := len(p)
 	take := n
-	if take > w.budget.remaining {
+	if !w.budget.unlimited && take > w.budget.remaining {
 		take = w.budget.remaining
 		w.budget.truncated = true
 	}
@@ -85,26 +50,42 @@ func (w budgetWriter) Write(p []byte) (int, error) {
 	return n, nil
 }
 
+// RunShell executes command through the platform shell with the workspace root
+// as the working directory. Commands are not restricted to the workspace:
+// absolute paths, traversal, and directory changes anywhere on the machine are
+// permitted by design so the agent can also act on installs outside the
+// repository.
+//
+// timeout < 0 and outputLimit < 0 mean "no limit": the command runs until it
+// finishes or the context is cancelled, and every byte it writes is captured.
+// Zero keeps the conservative defaults (2 minutes, 64 KiB).
 func (w *Workspace) RunShell(ctx context.Context, command string, timeout time.Duration, outputLimit int) (ShellResult, error) {
-	if err := w.validateCommand(command); err != nil {
-		return ShellResult{}, err
+	if strings.TrimSpace(command) == "" {
+		return ShellResult{}, errors.New("command is required")
 	}
-	if timeout <= 0 {
-		timeout = 2 * time.Minute
+	runCtx := ctx
+	if timeout >= 0 {
+		if timeout == 0 {
+			timeout = 2 * time.Minute
+		}
+		var cancel context.CancelFunc
+		runCtx, cancel = context.WithTimeout(ctx, timeout)
+		defer cancel()
 	}
-	if outputLimit <= 0 {
-		outputLimit = 64 * 1024
+	budget := &outputBudget{unlimited: outputLimit < 0}
+	if !budget.unlimited {
+		if outputLimit == 0 {
+			outputLimit = 64 * 1024
+		}
+		budget.remaining = outputLimit
 	}
-	ctx, cancel := context.WithTimeout(ctx, timeout)
-	defer cancel()
 	var cmd *exec.Cmd
 	if runtime.GOOS == "windows" {
-		cmd = exec.CommandContext(ctx, "powershell.exe", "-NoLogo", "-NoProfile", "-NonInteractive", "-Command", command)
+		cmd = exec.CommandContext(runCtx, "powershell.exe", "-NoLogo", "-NoProfile", "-NonInteractive", "-Command", command)
 	} else {
-		cmd = exec.CommandContext(ctx, "sh", "-c", command)
+		cmd = exec.CommandContext(runCtx, "sh", "-c", command)
 	}
 	cmd.Dir = w.root
-	budget := &outputBudget{remaining: outputLimit}
 	cmd.Stdout = budgetWriter{budget: budget}
 	cmd.Stderr = budgetWriter{budget: budget, stderr: true}
 	err := cmd.Run()
@@ -114,8 +95,8 @@ func (w *Workspace) RunShell(ctx context.Context, command string, timeout time.D
 	} else {
 		result.ExitCode = -1
 	}
-	if ctx.Err() != nil {
-		return result, ctx.Err()
+	if runCtx.Err() != nil {
+		return result, runCtx.Err()
 	}
 	if err != nil {
 		var exitErr *exec.ExitError

@@ -18,6 +18,7 @@
 
 ### Resources
 
+* [Local-only mode](./local-only.md)
 * [Troubleshooting Guide](https://docs.ollama.com/troubleshooting)
 * [FAQ](https://docs.ollama.com/faq)
 * [Development guide](./development.md)

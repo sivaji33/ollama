@@ -39,6 +39,7 @@ import (
 	"github.com/ollama/ollama/format"
 	"github.com/ollama/ollama/fs/ggml"
 	internalcloud "github.com/ollama/ollama/internal/cloud"
+	agenttools "github.com/ollama/ollama/internal/agent/tools"
 	"github.com/ollama/ollama/internal/proxy"
 	"github.com/ollama/ollama/llm"
 	"github.com/ollama/ollama/logutil"
@@ -60,8 +61,6 @@ const signinURLStr = "https://ollama.com/connect?name=%s&key=%s"
 const (
 	cloudErrRemoteInferenceUnavailable    = "remote model is unavailable"
 	cloudErrRemoteModelDetailsUnavailable = "remote model details are unavailable"
-	cloudErrWebSearchUnavailable          = "web search is unavailable"
-	cloudErrWebFetchUnavailable           = "web fetch is unavailable"
 	copilotChatUserAgentPrefix            = "GitHubCopilotChat/"
 )
 
@@ -2171,32 +2170,56 @@ func (s *Server) StatusHandler(c *gin.Context) {
 	})
 }
 
+// WebSearchExperimentalHandler answers web search from OwnBot itself using the
+// shared keyless internet search. It never proxies to an Ollama service.
 func (s *Server) WebSearchExperimentalHandler(c *gin.Context) {
-	s.webExperimentalProxyHandler(c, "/api/web_search", cloudErrWebSearchUnavailable)
-}
+	var req api.WebSearchRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	if strings.TrimSpace(req.Query) == "" {
+		c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": "query is required"})
+		return
+	}
 
-func (s *Server) WebFetchExperimentalHandler(c *gin.Context) {
-	s.webExperimentalProxyHandler(c, "/api/web_fetch", cloudErrWebFetchUnavailable)
-}
-
-func (s *Server) webExperimentalProxyHandler(c *gin.Context, proxyPath, disabledOperation string) {
-	// This endpoint is authenticated by the server's cloud signature. A client
-	// may have supplied an unrelated provider credential (for example, Codex's
-	// Responses API key); it must not be sent to the web-search service.
-	c.Request.Header.Del("Authorization")
-
-	body, err := readRequestBody(c.Request)
+	results, err := agenttools.SearchWeb(c.Request.Context(), req.Query, req.MaxResults)
 	if err != nil {
+		c.AbortWithStatusJSON(http.StatusBadGateway, gin.H{"error": err.Error()})
+		return
+	}
+
+	resp := api.WebSearchResponse{Results: make([]api.WebSearchResult, 0, len(results))}
+	for _, result := range results {
+		resp.Results = append(resp.Results, api.WebSearchResult{
+			Title:   result.Title,
+			URL:     result.URL,
+			Content: result.Snippet,
+		})
+	}
+	c.JSON(http.StatusOK, resp)
+}
+
+// WebFetchExperimentalHandler answers web fetch from OwnBot itself using the
+// shared direct fetch. It never proxies to an Ollama service.
+func (s *Server) WebFetchExperimentalHandler(c *gin.Context) {
+	var req api.WebFetchRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
 		c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
 
-	if len(bytes.TrimSpace(body)) == 0 {
-		c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": "missing request body"})
+	page, err := agenttools.FetchWebPage(c.Request.Context(), req.URL)
+	if err != nil {
+		c.AbortWithStatusJSON(http.StatusBadGateway, gin.H{"error": err.Error()})
 		return
 	}
 
-	proxyCloudRequestWithPath(c, body, proxyPath, disabledOperation)
+	c.JSON(http.StatusOK, api.WebFetchResponse{
+		Title:   page.Title,
+		Content: page.Text,
+		Links:   page.Links,
+	})
 }
 
 func (s *Server) WhoamiHandler(c *gin.Context) {

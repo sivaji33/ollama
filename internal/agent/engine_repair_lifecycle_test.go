@@ -99,20 +99,21 @@ func TestEngineEmitsRepairReverificationLifecycle(t *testing.T) {
 		EventVerificationPassed,
 	}
 
-	if len(result.LifecycleEvents) != len(want) {
+	milestones := milestoneLifecycleEvents(result.LifecycleEvents)
+	if len(milestones) != len(want) {
 		t.Fatalf(
-			"lifecycle events = %#v, want %d events",
-			result.LifecycleEvents,
+			"lifecycle events = %#v, want %d milestone events",
+			milestones,
 			len(want),
 		)
 	}
 
 	for i, wantType := range want {
-		if result.LifecycleEvents[i].Type != wantType {
+		if milestones[i].Type != wantType {
 			t.Fatalf(
-				"lifecycle event %d = %q, want %q; all=%#v",
+				"milestone event %d = %q, want %q; all=%#v",
 				i,
-				result.LifecycleEvents[i].Type,
+				milestones[i].Type,
 				wantType,
 				result.LifecycleEvents,
 			)

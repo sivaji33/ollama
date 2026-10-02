@@ -229,7 +229,20 @@ curl https://ollama.com/api/chat \
 
 ## Local only
 
-Ollama can run in local-only mode by [disabling Ollama's cloud](./faq#how-do-i-disable-ollama-cloud-features) features.
+This build runs in local-only mode by default: unless cloud is explicitly
+enabled, the server never connects to ollama.com on its own. Cloud models,
+cloud web search, cloud model lists, and the desktop app's update check
+against ollama.com all stay off.
+
+Cloud features can be toggled in the desktop app settings, or opted into for
+the CLI and for direct server runs with either:
+
+* `OLLAMA_NO_CLOUD=0` to explicitly re-enable cloud for that process, or
+* `"disable_ollama_cloud": false` in `~/.ollama/server.json`.
+
+Setting `OLLAMA_NO_CLOUD=1` (or `"disable_ollama_cloud": true`) forces cloud
+off. See [how do I disable Ollama cloud features](./faq#how-do-i-disable-ollama-cloud-features)
+for the environment variable details.
 
 ## Retirements
 

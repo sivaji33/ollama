@@ -30,6 +30,7 @@ import (
 	"github.com/ollama/ollama/auth"
 	"github.com/ollama/ollama/envconfig"
 	"github.com/ollama/ollama/format"
+	internalcloud "github.com/ollama/ollama/internal/cloud"
 	"github.com/ollama/ollama/version"
 )
 
@@ -116,7 +117,7 @@ func (c *Client) do(ctx context.Context, method, path string, reqData, respData 
 	requestURL := c.base.JoinPath(path)
 
 	var token string
-	if envconfig.UseAuth() || c.base.Hostname() == "ollama.com" {
+	if envconfig.UseAuth() || (c.base.Hostname() == "ollama.com" && !internalcloud.Disabled()) {
 		now := strconv.FormatInt(time.Now().Unix(), 10)
 		chal := fmt.Sprintf("%s,%s?ts=%s", method, path, now)
 		token, err = getAuthorizationToken(ctx, chal)
@@ -181,7 +182,7 @@ func (c *Client) stream(ctx context.Context, method, path string, data any, fn f
 	requestURL := c.base.JoinPath(path)
 
 	var token string
-	if envconfig.UseAuth() || c.base.Hostname() == "ollama.com" {
+	if envconfig.UseAuth() || (c.base.Hostname() == "ollama.com" && !internalcloud.Disabled()) {
 		var err error
 		now := strconv.FormatInt(time.Now().Unix(), 10)
 		chal := fmt.Sprintf("%s,%s?ts=%s", method, path, now)

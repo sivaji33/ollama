@@ -144,8 +144,13 @@ func TestServerCmdCloudSettingEnv(t *testing.T) {
 		want          string
 	}{
 		{
-			name: "default cloud enabled",
-			want: "OLLAMA_NO_CLOUD=0",
+			name: "default cloud disabled",
+			want: "OLLAMA_NO_CLOUD=1",
+		},
+		{
+			name:     "env enables cloud",
+			envValue: "0",
+			want:     "OLLAMA_NO_CLOUD=0",
 		},
 		{
 			name:     "env disables cloud",

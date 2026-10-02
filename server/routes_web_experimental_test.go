@@ -1,386 +1,140 @@
 package server
 
 import (
-	"bytes"
-	"context"
 	"encoding/json"
-	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/gin-gonic/gin"
-	internalcloud "github.com/ollama/ollama/internal/cloud"
-	"github.com/ollama/ollama/version"
+
+	"github.com/ollama/ollama/api"
+	agenttools "github.com/ollama/ollama/internal/agent/tools"
 )
 
-type webExperimentalUpstreamCapture struct {
-	path   string
-	body   string
-	header http.Header
-}
+const experimentalWebSearchFixture = `<html><body>
+<a class="result__a" href="//duckduckgo.com/l/?uddg=https%3A%2F%2Fexample.com%2Fdocs">Example Docs</a>
+<td class="result__snippet">Readable snippet text</td>
+<a class="result__a" href="https://go.dev/doc/effective_go">Effective Go</a>
+<td class="result__snippet">Idiomatic Go guidance</td>
+</body></html>`
 
-func newWebExperimentalUpstream(t *testing.T, responseBody string) (*httptest.Server, *webExperimentalUpstreamCapture) {
+func postExperimentalWeb(t *testing.T, s *Server, path, body string) (*http.Response, []byte) {
 	t.Helper()
+	router, err := s.GenerateRoutes()
+	if err != nil {
+		t.Fatal(err)
+	}
+	local := httptest.NewServer(router)
+	t.Cleanup(local.Close)
 
-	capture := &webExperimentalUpstreamCapture{}
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		payload, _ := io.ReadAll(r.Body)
-		capture.path = r.URL.Path
-		capture.body = string(payload)
-		capture.header = r.Header.Clone()
-
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte(responseBody))
-	}))
-
-	return srv, capture
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodPost, local.URL+path, strings.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := local.Client().Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { resp.Body.Close() })
+	payload, _ := io.ReadAll(resp.Body)
+	return resp, payload
 }
 
-func TestExperimentalWebEndpointsPassthrough(t *testing.T) {
+// TestExperimentalWebSearchUsesLocalInternetSearch proves the experimental web
+// search endpoint answers from OwnBot's own keyless internet search instead of
+// proxying to an Ollama service.
+func TestExperimentalWebSearchUsesLocalInternetSearch(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	setTestHome(t, t.TempDir())
 
-	tests := []struct {
-		name         string
-		localPath    string
-		upstreamPath string
-		requestBody  string
-		responseBody string
-		assertBody   string
-	}{
-		{
-			name:         "web_search",
-			localPath:    "/api/experimental/web_search",
-			upstreamPath: "/api/web_search",
-			requestBody:  `{"query":"what is ollama?","max_results":3}`,
-			responseBody: `{"results":[{"title":"Ollama","url":"https://ollama.com","content":"Cloud models are now available"}]}`,
-			assertBody:   `"query":"what is ollama?"`,
-		},
-		{
-			name:         "web_fetch",
-			localPath:    "/api/experimental/web_fetch",
-			upstreamPath: "/api/web_fetch",
-			requestBody:  `{"url":"https://ollama.com"}`,
-			responseBody: `{"title":"Ollama","content":"Cloud models are now available","links":["https://ollama.com/"]}`,
-			assertBody:   `"url":"https://ollama.com"`,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			upstream, capture := newWebExperimentalUpstream(t, tt.responseBody)
-			defer upstream.Close()
-
-			original := cloudProxyBaseURL
-			cloudProxyBaseURL = upstream.URL
-			t.Cleanup(func() { cloudProxyBaseURL = original })
-
-			s := &Server{}
-			router, err := s.GenerateRoutes()
-			if err != nil {
-				t.Fatal(err)
-			}
-			local := httptest.NewServer(router)
-			defer local.Close()
-
-			req, err := http.NewRequestWithContext(t.Context(), http.MethodPost, local.URL+tt.localPath, bytes.NewBufferString(tt.requestBody))
-			if err != nil {
-				t.Fatal(err)
-			}
-			req.Header.Set("Content-Type", "application/json")
-			req.Header.Set("Authorization", "Bearer should-forward")
-			req.Header.Set("X-Test-Header", "web-experimental")
-			req.Header.Set(cloudProxyClientVersionHeader, "should-be-overwritten")
-
-			resp, err := local.Client().Do(req)
-			if err != nil {
-				t.Fatal(err)
-			}
-			defer resp.Body.Close()
-
-			body, _ := io.ReadAll(resp.Body)
-			if resp.StatusCode != http.StatusOK {
-				t.Fatalf("expected status 200, got %d (%s)", resp.StatusCode, string(body))
-			}
-			if capture.path != tt.upstreamPath {
-				t.Fatalf("expected upstream path %q, got %q", tt.upstreamPath, capture.path)
-			}
-			if !bytes.Contains([]byte(capture.body), []byte(tt.assertBody)) {
-				t.Fatalf("expected upstream body to contain %q, got %q", tt.assertBody, capture.body)
-			}
-			if got := capture.header.Get("Authorization"); got != "" {
-				t.Fatalf("expected Authorization header to be stripped, got %q", got)
-			}
-			if got := capture.header.Get("X-Test-Header"); got != "web-experimental" {
-				t.Fatalf("expected forwarded X-Test-Header=web-experimental, got %q", got)
-			}
-			if got := capture.header.Get(cloudProxyClientVersionHeader); got != version.Version {
-				t.Fatalf("expected %s=%q, got %q", cloudProxyClientVersionHeader, version.Version, got)
-			}
-		})
-	}
-}
-
-func TestExperimentalWebEndpointPreservesUpstreamRateLimit(t *testing.T) {
-	gin.SetMode(gin.TestMode)
-	setTestHome(t, t.TempDir())
-
-	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if got := r.Header.Get("Authorization"); got != "" {
-			t.Fatalf("unexpected forwarded Authorization header: %q", got)
+	search := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			t.Errorf("method = %s, want POST", r.Method)
 		}
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusTooManyRequests)
-		_, _ = w.Write([]byte(`{"error":"rate limit exceeded"}`))
+		if got := r.PostFormValue("q"); got != "effective go" {
+			t.Errorf("query = %q, want %q", got, "effective go")
+		}
+		w.Header().Set("Content-Type", "text/html")
+		_, _ = io.WriteString(w, experimentalWebSearchFixture)
 	}))
-	defer upstream.Close()
+	defer search.Close()
+	t.Setenv("OLLAMA_WEB_SEARCH_URL", search.URL)
 
-	original := cloudProxyBaseURL
-	cloudProxyBaseURL = upstream.URL
-	t.Cleanup(func() { cloudProxyBaseURL = original })
-
-	s := &Server{}
-	router, err := s.GenerateRoutes()
-	if err != nil {
+	resp, body := postExperimentalWeb(t, &Server{}, "/api/experimental/web_search", `{"query":"effective go","max_results":2}`)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d body=%s", resp.StatusCode, body)
+	}
+	var got api.WebSearchResponse
+	if err := json.Unmarshal(body, &got); err != nil {
 		t.Fatal(err)
 	}
-	local := httptest.NewServer(router)
-	defer local.Close()
-
-	req, err := http.NewRequestWithContext(t.Context(), http.MethodPost, local.URL+"/api/experimental/web_search", bytes.NewBufferString(`{"query":"hello"}`))
-	if err != nil {
-		t.Fatal(err)
+	if len(got.Results) != 2 {
+		t.Fatalf("results = %+v", got.Results)
 	}
-	req.Header.Set("Authorization", "Bearer codex-credential")
-
-	resp, err := local.Client().Do(req)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer resp.Body.Close()
-	body, _ := io.ReadAll(resp.Body)
-	if resp.StatusCode != http.StatusTooManyRequests {
-		t.Fatalf("status = %d, want 429 (%s)", resp.StatusCode, body)
-	}
-	if string(body) != `{"error":"rate limit exceeded"}` {
-		t.Fatalf("body = %s", body)
+	if got.Results[0].Title != "Example Docs" || got.Results[0].URL != "https://example.com/docs" || got.Results[0].Content != "Readable snippet text" {
+		t.Fatalf("first result = %+v", got.Results[0])
 	}
 }
 
-func TestExperimentalWebEndpointsMissingBody(t *testing.T) {
+// TestExperimentalWebFetchUsesLocalDirectFetch proves the experimental web
+// fetch endpoint downloads pages directly instead of using an Ollama service.
+func TestExperimentalWebFetchUsesLocalDirectFetch(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	setTestHome(t, t.TempDir())
 
-	s := &Server{}
-	router, err := s.GenerateRoutes()
-	if err != nil {
+	page := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		_, _ = io.WriteString(w, `<html><head><title>Local Page</title></head><body><p>Hello internet</p><a href="/next">Next</a></body></html>`)
+	}))
+	defer page.Close()
+
+	original := agenttools.WebFetchHostGuard
+	agenttools.WebFetchHostGuard = func(string) error { return nil }
+	t.Cleanup(func() { agenttools.WebFetchHostGuard = original })
+
+	resp, body := postExperimentalWeb(t, &Server{}, "/api/experimental/web_fetch", `{"url":"`+page.URL+`"}`)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d body=%s", resp.StatusCode, body)
+	}
+	var got api.WebFetchResponse
+	if err := json.Unmarshal(body, &got); err != nil {
 		t.Fatal(err)
 	}
-
-	local := httptest.NewServer(router)
-	defer local.Close()
-
-	tests := []string{
-		"/api/experimental/web_search",
-		"/api/experimental/web_fetch",
+	if got.Title != "Local Page" {
+		t.Fatalf("title = %q", got.Title)
 	}
-
-	for _, path := range tests {
-		t.Run(path, func(t *testing.T) {
-			req, err := http.NewRequestWithContext(t.Context(), http.MethodPost, local.URL+path, nil)
-			if err != nil {
-				t.Fatal(err)
-			}
-			req.Header.Set("Content-Type", "application/json")
-
-			resp, err := local.Client().Do(req)
-			if err != nil {
-				t.Fatal(err)
-			}
-			defer resp.Body.Close()
-
-			body, _ := io.ReadAll(resp.Body)
-			if resp.StatusCode != http.StatusBadRequest {
-				t.Fatalf("expected status 400, got %d (%s)", resp.StatusCode, string(body))
-			}
-			if string(body) != `{"error":"missing request body"}` {
-				t.Fatalf("unexpected response body: %s", string(body))
-			}
-		})
+	if !strings.Contains(got.Content, "Hello internet") {
+		t.Fatalf("content = %q", got.Content)
+	}
+	if len(got.Links) == 0 || got.Links[0] != page.URL+"/next" {
+		t.Fatalf("links = %v", got.Links)
 	}
 }
 
-func TestExperimentalWebEndpointsCloudDisabled(t *testing.T) {
+func TestExperimentalWebEndpointsRejectBadRequests(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	setTestHome(t, t.TempDir())
-	t.Setenv("OLLAMA_NO_CLOUD", "1")
 
-	s := &Server{}
-	router, err := s.GenerateRoutes()
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	local := httptest.NewServer(router)
-	defer local.Close()
-
-	tests := []struct {
-		name      string
-		path      string
-		request   string
-		operation string
+	cases := []struct {
+		name string
+		path string
+		body string
+		want int
 	}{
-		{
-			name:      "web_search",
-			path:      "/api/experimental/web_search",
-			request:   `{"query":"latest ollama release"}`,
-			operation: cloudErrWebSearchUnavailable,
-		},
-		{
-			name:      "web_fetch",
-			path:      "/api/experimental/web_fetch",
-			request:   `{"url":"https://ollama.com"}`,
-			operation: cloudErrWebFetchUnavailable,
-		},
+		{name: "search malformed json", path: "/api/experimental/web_search", body: `{`, want: http.StatusBadRequest},
+		{name: "search empty query", path: "/api/experimental/web_search", body: `{"query":"   "}`, want: http.StatusBadRequest},
+		{name: "fetch unsupported scheme", path: "/api/experimental/web_fetch", body: `{"url":"ftp://example.com/file"}`, want: http.StatusBadGateway},
 	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			req, err := http.NewRequestWithContext(t.Context(), http.MethodPost, local.URL+tt.path, bytes.NewBufferString(tt.request))
-			if err != nil {
-				t.Fatal(err)
-			}
-			req.Header.Set("Content-Type", "application/json")
-
-			resp, err := local.Client().Do(req)
-			if err != nil {
-				t.Fatal(err)
-			}
-			defer resp.Body.Close()
-
-			body, _ := io.ReadAll(resp.Body)
-			if resp.StatusCode != http.StatusForbidden {
-				t.Fatalf("expected status 403, got %d (%s)", resp.StatusCode, string(body))
-			}
-
-			var got map[string]string
-			if err := json.Unmarshal(body, &got); err != nil {
-				t.Fatalf("expected json error body, got: %q", string(body))
-			}
-			if got["error"] != internalcloud.DisabledError(tt.operation) {
-				t.Fatalf("unexpected error message: %q", got["error"])
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			resp, body := postExperimentalWeb(t, &Server{}, tc.path, tc.body)
+			if resp.StatusCode != tc.want {
+				t.Fatalf("status = %d, want %d (body=%s)", resp.StatusCode, tc.want, body)
 			}
 		})
-	}
-}
-
-func TestExperimentalWebEndpointSigningFailureReturnsUnauthorized(t *testing.T) {
-	gin.SetMode(gin.TestMode)
-	setTestHome(t, t.TempDir())
-
-	origSignRequest := cloudProxySignRequest
-	origSigninURL := cloudProxySigninURL
-	cloudProxySignRequest = func(context.Context, *http.Request) error {
-		return errors.New("ssh: no key found")
-	}
-	cloudProxySigninURL = func() (string, error) {
-		return "https://ollama.com/signin/example", nil
-	}
-	t.Cleanup(func() {
-		cloudProxySignRequest = origSignRequest
-		cloudProxySigninURL = origSigninURL
-	})
-
-	s := &Server{}
-	router, err := s.GenerateRoutes()
-	if err != nil {
-		t.Fatal(err)
-	}
-	local := httptest.NewServer(router)
-	defer local.Close()
-
-	req, err := http.NewRequestWithContext(t.Context(), http.MethodPost, local.URL+"/api/experimental/web_search", bytes.NewBufferString(`{"query":"hello"}`))
-	if err != nil {
-		t.Fatal(err)
-	}
-	req.Header.Set("Content-Type", "application/json")
-
-	resp, err := local.Client().Do(req)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer resp.Body.Close()
-
-	body, _ := io.ReadAll(resp.Body)
-	if resp.StatusCode != http.StatusUnauthorized {
-		t.Fatalf("expected status 401, got %d (%s)", resp.StatusCode, string(body))
-	}
-
-	var got map[string]any
-	if err := json.Unmarshal(body, &got); err != nil {
-		t.Fatalf("expected json error body, got: %q", string(body))
-	}
-	if got["error"] != "unauthorized" {
-		t.Fatalf("unexpected error message: %v", got["error"])
-	}
-	if got["signin_url"] != "https://ollama.com/signin/example" {
-		t.Fatalf("unexpected signin_url: %v", got["signin_url"])
-	}
-}
-
-func TestExperimentalWebEndpointSigningFailureWithoutSigninURL(t *testing.T) {
-	gin.SetMode(gin.TestMode)
-	setTestHome(t, t.TempDir())
-
-	origSignRequest := cloudProxySignRequest
-	origSigninURL := cloudProxySigninURL
-	cloudProxySignRequest = func(context.Context, *http.Request) error {
-		return errors.New("ssh: no key found")
-	}
-	cloudProxySigninURL = func() (string, error) {
-		return "", errors.New("key missing")
-	}
-	t.Cleanup(func() {
-		cloudProxySignRequest = origSignRequest
-		cloudProxySigninURL = origSigninURL
-	})
-
-	s := &Server{}
-	router, err := s.GenerateRoutes()
-	if err != nil {
-		t.Fatal(err)
-	}
-	local := httptest.NewServer(router)
-	defer local.Close()
-
-	req, err := http.NewRequestWithContext(t.Context(), http.MethodPost, local.URL+"/api/experimental/web_fetch", bytes.NewBufferString(`{"url":"https://ollama.com"}`))
-	if err != nil {
-		t.Fatal(err)
-	}
-	req.Header.Set("Content-Type", "application/json")
-
-	resp, err := local.Client().Do(req)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer resp.Body.Close()
-
-	body, _ := io.ReadAll(resp.Body)
-	if resp.StatusCode != http.StatusUnauthorized {
-		t.Fatalf("expected status 401, got %d (%s)", resp.StatusCode, string(body))
-	}
-
-	var got map[string]any
-	if err := json.Unmarshal(body, &got); err != nil {
-		t.Fatalf("expected json error body, got: %q", string(body))
-	}
-	if got["error"] != "unauthorized" {
-		t.Fatalf("unexpected error message: %v", got["error"])
-	}
-	if _, ok := got["signin_url"]; ok {
-		t.Fatalf("did not expect signin_url when helper fails, got %v", got["signin_url"])
 	}
 }
