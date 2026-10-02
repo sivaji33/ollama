@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"sync"
 	"testing"
 
 	"github.com/gin-gonic/gin"
@@ -13,6 +14,7 @@ import (
 )
 
 type sessionAPITestRunner struct {
+	mu      sync.Mutex
 	request agentpkg.RunRequest
 	result  agentpkg.RunResult
 	err     error
@@ -22,8 +24,16 @@ func (r *sessionAPITestRunner) Run(
 	_ context.Context,
 	request agentpkg.RunRequest,
 ) (agentpkg.RunResult, error) {
+	r.mu.Lock()
 	r.request = request
+	r.mu.Unlock()
 	return r.result, r.err
+}
+
+func (r *sessionAPITestRunner) lastRequest() agentpkg.RunRequest {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.request
 }
 
 func newSessionAPITestServer(t *testing.T, runner agentRunner) (*Server, *agentpkg.SessionStore) {
@@ -94,17 +104,27 @@ func TestAgentSessionCreateUsesDefaultAgentModelAndPersistsResult(t *testing.T) 
 		)
 	}
 
-	if runner.request.Model != agentpkg.DefaultAgentModel {
-		t.Fatalf(
-			"runner model = %q, want %q",
-			runner.request.Model,
-			agentpkg.DefaultAgentModel,
-		)
+	var accepted agentpkg.SessionSnapshot
+	if err := json.Unmarshal(recorder.Body.Bytes(), &accepted); err != nil {
+		t.Fatalf("decode accepted session: %v", err)
+	}
+	if accepted.State != agentpkg.SessionStateRunning {
+		t.Fatalf("accepted state = %q, want %q", accepted.State, agentpkg.SessionStateRunning)
 	}
 
-	snapshot, err := store.Load(runner.request.SessionID)
-	if err != nil {
-		t.Fatalf("Load persisted session: %v", err)
+	snapshot := waitForPersistedSessionState(
+		t,
+		store,
+		accepted.ID,
+		agentpkg.SessionStateVerified,
+	)
+	runRequest := runner.lastRequest()
+	if runRequest.Model != agentpkg.DefaultAgentModel {
+		t.Fatalf(
+			"runner model = %q, want %q",
+			runRequest.Model,
+			agentpkg.DefaultAgentModel,
+		)
 	}
 
 	if snapshot.Model != agentpkg.DefaultAgentModel {
@@ -174,7 +194,7 @@ func TestAgentSessionCreateHonorsExplicitModel(t *testing.T) {
 		},
 	}
 
-	server, _ := newSessionAPITestServer(t, runner)
+	server, store := newSessionAPITestServer(t, runner)
 	router := sessionAPIRouter(server)
 
 	body := []byte(`{
@@ -201,10 +221,21 @@ func TestAgentSessionCreateHonorsExplicitModel(t *testing.T) {
 		)
 	}
 
-	if runner.request.Model != "custom-model:latest" {
+	var accepted agentpkg.SessionSnapshot
+	if err := json.Unmarshal(recorder.Body.Bytes(), &accepted); err != nil {
+		t.Fatalf("decode accepted session: %v", err)
+	}
+	waitForPersistedSessionState(
+		t,
+		store,
+		accepted.ID,
+		agentpkg.SessionStateFailed,
+	)
+	runRequest := runner.lastRequest()
+	if runRequest.Model != "custom-model:latest" {
 		t.Fatalf(
 			"runner model = %q, want custom-model:latest",
-			runner.request.Model,
+			runRequest.Model,
 		)
 	}
 }
@@ -243,6 +274,17 @@ func TestAgentSessionReadEndpointsSurviveFreshStore(t *testing.T) {
 		t.Fatalf("create status = %d", createRecorder.Code)
 	}
 
+	var accepted agentpkg.SessionSnapshot
+	if err := json.Unmarshal(createRecorder.Body.Bytes(), &accepted); err != nil {
+		t.Fatalf("decode accepted session: %v", err)
+	}
+	waitForPersistedSessionState(
+		t,
+		store,
+		accepted.ID,
+		agentpkg.SessionStateVerified,
+	)
+
 	// Simulate process-level recreation by using a fresh SessionStore object
 	// pointed at the same persistent root.
 	freshStore, err := agentpkg.NewSessionStore(store.Root())
@@ -257,7 +299,7 @@ func TestAgentSessionReadEndpointsSurviveFreshStore(t *testing.T) {
 		getRecorder,
 		httptest.NewRequest(
 			http.MethodGet,
-			"/api/agent/session/"+runner.request.SessionID,
+			"/api/agent/session/"+accepted.ID,
 			nil,
 		),
 	)
@@ -275,7 +317,7 @@ func TestAgentSessionReadEndpointsSurviveFreshStore(t *testing.T) {
 		t.Fatalf("decode snapshot: %v", err)
 	}
 
-	if snapshot.ID != runner.request.SessionID {
+	if snapshot.ID != accepted.ID {
 		t.Fatalf("snapshot ID = %q", snapshot.ID)
 	}
 
@@ -284,7 +326,7 @@ func TestAgentSessionReadEndpointsSurviveFreshStore(t *testing.T) {
 		eventsRecorder,
 		httptest.NewRequest(
 			http.MethodGet,
-			"/api/agent/session/"+runner.request.SessionID+"/events",
+			"/api/agent/session/"+accepted.ID+"/events",
 			nil,
 		),
 	)
@@ -302,7 +344,7 @@ func TestAgentSessionReadEndpointsSurviveFreshStore(t *testing.T) {
 		diffRecorder,
 		httptest.NewRequest(
 			http.MethodGet,
-			"/api/agent/session/"+runner.request.SessionID+"/diff",
+			"/api/agent/session/"+accepted.ID+"/diff",
 			nil,
 		),
 	)
@@ -367,7 +409,8 @@ func TestAgentRunHandlerRemainsBackwardCompatible(t *testing.T) {
 		)
 	}
 
-	if runner.request.Task != "legacy request" {
-		t.Fatalf("legacy runner task = %q", runner.request.Task)
+	legacyRequest := runner.lastRequest()
+	if legacyRequest.Task != "legacy request" {
+		t.Fatalf("legacy runner task = %q", legacyRequest.Task)
 	}
 }

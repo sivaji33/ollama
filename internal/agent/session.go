@@ -8,6 +8,8 @@ import (
 )
 
 const (
+	// Deprecated: retained for source compatibility. The engine no longer
+	// enforces fixed total-step or repair-attempt limits.
 	DefaultMaxSteps       = 12
 	MaxRepairAttempts     = 2
 	DefaultCommandTimeout = 2 * time.Minute
@@ -22,10 +24,13 @@ const (
 )
 
 type RunRequest struct {
-	SessionID        string                   `json:"session_id,omitempty"`
-	Model            string                   `json:"model"`
-	Workspace        string                   `json:"workspace"`
-	Task             string                   `json:"task"`
+	SessionID string `json:"session_id,omitempty"`
+	Model     string `json:"model"`
+	Workspace string `json:"workspace"`
+	Task      string `json:"task"`
+	// StepOffset is server-owned session history and is never accepted from JSON.
+	StepOffset int `json:"-"`
+	// Deprecated: accepted from existing clients, but ignored by the engine.
 	MaxSteps         int                      `json:"max_steps,omitempty"`
 	Verify           []string                 `json:"verify,omitempty"`
 	OnLifecycleEvent func(SessionEvent) error `json:"-"`

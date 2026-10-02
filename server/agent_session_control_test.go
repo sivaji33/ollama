@@ -3,6 +3,7 @@ package server
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -82,44 +83,58 @@ func TestAgentSessionContinueReusesPersistentSessionIdentity(t *testing.T) {
 		)
 	}
 
-	if runner.request.SessionID != original.ID {
+	var accepted agentpkg.SessionSnapshot
+	if err := json.Unmarshal(recorder.Body.Bytes(), &accepted); err != nil {
+		t.Fatalf("decode continued session: %v", err)
+	}
+	if accepted.ID != original.ID {
+		t.Fatalf("accepted ID = %q, want %q", accepted.ID, original.ID)
+	}
+	if accepted.State != agentpkg.SessionStateRunning {
+		t.Fatalf("accepted state = %q, want %q", accepted.State, agentpkg.SessionStateRunning)
+	}
+
+	updated := waitForPersistedSessionState(
+		t,
+		store,
+		original.ID,
+		agentpkg.SessionStateVerified,
+	)
+	runRequest := runner.lastRequest()
+
+	if runRequest.SessionID != original.ID {
 		t.Fatalf(
 			"runner SessionID = %q, want %q",
-			runner.request.SessionID,
+			runRequest.SessionID,
 			original.ID,
 		)
 	}
 
-	if runner.request.Model != original.Model {
+	if runRequest.Model != original.Model {
 		t.Fatalf(
 			"runner Model = %q, want %q",
-			runner.request.Model,
+			runRequest.Model,
 			original.Model,
 		)
 	}
 
-	if runner.request.Workspace != original.Workspace {
+	if runRequest.Workspace != original.Workspace {
 		t.Fatalf(
 			"runner Workspace = %q, want %q",
-			runner.request.Workspace,
+			runRequest.Workspace,
 			original.Workspace,
 		)
 	}
 
-	if runner.request.Task != "finish the repair" {
+	if runRequest.Task != "finish the repair" {
 		t.Fatalf(
 			"runner Task = %q, want finish the repair",
-			runner.request.Task,
+			runRequest.Task,
 		)
 	}
 
-	if runner.request.OnLifecycleEvent == nil {
+	if runRequest.OnLifecycleEvent == nil {
 		t.Fatal("continue runner did not receive live lifecycle callback")
-	}
-
-	updated, err := store.Load(original.ID)
-	if err != nil {
-		t.Fatalf("Load continued session: %v", err)
 	}
 
 	if updated.ID != original.ID {

@@ -6,6 +6,17 @@
 
 include(ExternalProject)
 
+# The supported Windows local build toolchain is Visual Studio/MSVC. MinGW can
+# configure and link llama-server successfully, but the resulting helper hangs
+# during process shutdown and blocks Ollama's startup device discovery. Fail at
+# configure time instead of producing a payload that binds a port but cannot
+# answer health requests.
+if(WIN32 AND NOT MSVC)
+    message(FATAL_ERROR
+        "Windows local Ollama builds require the Visual Studio 2022 MSVC toolchain. "
+        "Run CMake from a VS Developer PowerShell/Command Prompt.")
+endif()
+
 set(OLLAMA_LLAMA_BACKENDS "" CACHE STRING
     "Semicolon-separated llama-server GPU backends to build: cuda_v12;cuda_v13;rocm_v7_1;rocm_v7_2;vulkan;cuda_jetpack5;cuda_jetpack6")
 set(_ollama_mlx_backends_doc "Semicolon-separated MLX backends to build: cuda_v13;metal_v3;metal_v4")
@@ -629,9 +640,20 @@ if(OLLAMA_HAVE_LLAMA_SERVER)
     set(OLLAMA_GO_LDFLAGS
         "-s -w -X=github.com/ollama/ollama/version.Version=${OLLAMA_VERSION} -X=github.com/ollama/ollama/server.mode=release")
     if(GO_EXECUTABLE)
+        set(_ollama_go_env CGO_ENABLED=1)
+        if(WIN32)
+            execute_process(
+                COMMAND ${GO_EXECUTABLE} env CC
+                OUTPUT_VARIABLE _ollama_go_cc
+                OUTPUT_STRIP_TRAILING_WHITESPACE)
+            if(IS_ABSOLUTE "${_ollama_go_cc}")
+                get_filename_component(_ollama_go_cc_dir "${_ollama_go_cc}" DIRECTORY)
+                list(APPEND _ollama_go_env "PATH=${_ollama_go_cc_dir}\;$ENV{PATH}")
+            endif()
+        endif()
         add_custom_target(ollama-go ALL
             COMMAND ${CMAKE_COMMAND} -E make_directory "${OLLAMA_GO_OUTPUT_DIR}"
-            COMMAND ${CMAKE_COMMAND} -E env CGO_ENABLED=1
+            COMMAND ${CMAKE_COMMAND} -E env ${_ollama_go_env}
                 ${GO_EXECUTABLE} build -trimpath -ldflags "${OLLAMA_GO_LDFLAGS}" -o "${OLLAMA_GO_OUTPUT}" .
             WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
             BYPRODUCTS ${OLLAMA_GO_OUTPUT}

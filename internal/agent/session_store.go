@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -34,6 +35,7 @@ type SessionSnapshot struct {
 	ID                  string               `json:"id"`
 	Model               string               `json:"model"`
 	Workspace           string               `json:"workspace"`
+	Objective           string               `json:"objective,omitempty"`
 	Task                string               `json:"task"`
 	State               SessionState         `json:"state"`
 	CreatedAt           time.Time            `json:"created_at"`
@@ -47,11 +49,15 @@ type SessionSnapshot struct {
 type SessionEvent struct {
 	Type      SessionEventType `json:"type"`
 	Timestamp time.Time        `json:"timestamp"`
+	Step      int              `json:"step,omitempty"`
+	ToolName  string           `json:"tool_name,omitempty"`
 	Message   string           `json:"message,omitempty"`
 }
 
 type SessionStore struct {
 	root string
+	// mu keeps Windows readers from holding a snapshot open during replacement.
+	mu sync.RWMutex
 }
 
 func NewSessionStore(root string) (*SessionStore, error) {
@@ -75,6 +81,8 @@ func (s *SessionStore) Save(snapshot SessionSnapshot) error {
 	if s == nil {
 		return errors.New("session store is nil")
 	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	if err := validateSessionID(snapshot.ID); err != nil {
 		return err
 	}
@@ -111,6 +119,8 @@ func (s *SessionStore) Load(sessionID string) (SessionSnapshot, error) {
 	if s == nil {
 		return snapshot, errors.New("session store is nil")
 	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 	if err := validateSessionID(sessionID); err != nil {
 		return snapshot, err
 	}
@@ -139,6 +149,8 @@ func (s *SessionStore) AppendEvent(sessionID string, event SessionEvent) error {
 	if s == nil {
 		return errors.New("session store is nil")
 	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	if err := s.ensureSessionExists(sessionID); err != nil {
 		return err
 	}
@@ -168,6 +180,8 @@ func (s *SessionStore) Events(sessionID string) ([]SessionEvent, error) {
 	if s == nil {
 		return nil, errors.New("session store is nil")
 	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 	if err := s.ensureSessionExists(sessionID); err != nil {
 		return nil, err
 	}
@@ -212,6 +226,8 @@ func (s *SessionStore) SaveDiff(sessionID, diff string) error {
 	if s == nil {
 		return errors.New("session store is nil")
 	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	if err := s.ensureSessionExists(sessionID); err != nil {
 		return err
 	}
@@ -235,6 +251,8 @@ func (s *SessionStore) LoadDiff(sessionID string) (string, error) {
 	if s == nil {
 		return "", errors.New("session store is nil")
 	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 	if err := s.ensureSessionExists(sessionID); err != nil {
 		return "", err
 	}

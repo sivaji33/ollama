@@ -127,6 +127,12 @@ func TestAgentSessionContinuesInterruptedSessionWithoutReplacingOldDiff(t *testi
 	}
 	close(runner.release)
 	<-done
+	waitForPersistedSessionState(
+		t,
+		store,
+		snapshot.ID,
+		agentpkg.SessionStateFailed,
+	)
 	if diff, _ := store.LoadDiff(snapshot.ID); diff != "old diff" {
 		t.Fatalf("final diff=%q, want old diff", diff)
 	}

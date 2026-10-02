@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 )
@@ -103,6 +104,33 @@ func TestSessionStoreSaveIsAtomicAndLeavesNoTempFile(t *testing.T) {
 
 	if !foundSession {
 		t.Fatalf("session.json was not created")
+	}
+}
+
+func TestSessionStoreSaveReplacesExistingSnapshot(t *testing.T) {
+	store, err := NewSessionStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewSessionStore: %v", err)
+	}
+
+	snapshot := testSessionSnapshot(t.TempDir())
+	if err := store.Save(snapshot); err != nil {
+		t.Fatalf("initial Save: %v", err)
+	}
+
+	snapshot.State = SessionStateVerified
+	snapshot.FinalSummary = "source change verified"
+	snapshot.UpdatedAt = snapshot.UpdatedAt.Add(time.Minute)
+	if err := store.Save(snapshot); err != nil {
+		t.Fatalf("replace Save: %v", err)
+	}
+
+	got, err := store.Load(snapshot.ID)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if got.State != snapshot.State || got.FinalSummary != snapshot.FinalSummary || !got.UpdatedAt.Equal(snapshot.UpdatedAt) {
+		t.Fatalf("loaded snapshot = %+v, want updated snapshot %+v", got, snapshot)
 	}
 }
 
@@ -224,6 +252,82 @@ func TestSessionStoreDiffSurvivesFreshStore(t *testing.T) {
 
 	if got != want {
 		t.Fatalf("diff mismatch:\ngot:\n%s\nwant:\n%s", got, want)
+	}
+}
+
+func TestSessionStoreSaveDiffReplacesExistingDiff(t *testing.T) {
+	store, err := NewSessionStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewSessionStore: %v", err)
+	}
+	snapshot := testSessionSnapshot(t.TempDir())
+	if err := store.Save(snapshot); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+
+	if err := store.SaveDiff(snapshot.ID, "initial diff"); err != nil {
+		t.Fatalf("initial SaveDiff: %v", err)
+	}
+	if err := store.SaveDiff(snapshot.ID, "updated diff"); err != nil {
+		t.Fatalf("replace SaveDiff: %v", err)
+	}
+	got, err := store.LoadDiff(snapshot.ID)
+	if err != nil {
+		t.Fatalf("LoadDiff: %v", err)
+	}
+	if got != "updated diff" {
+		t.Fatalf("loaded diff = %q, want updated diff", got)
+	}
+}
+
+func TestSessionStoreConcurrentLoadsAndSaves(t *testing.T) {
+	store, err := NewSessionStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewSessionStore: %v", err)
+	}
+	snapshot := testSessionSnapshot(t.TempDir())
+	if err := store.Save(snapshot); err != nil {
+		t.Fatalf("initial Save: %v", err)
+	}
+
+	const iterations = 500
+	start := make(chan struct{})
+	errs := make(chan error, 1)
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		<-start
+		for i := 0; i < iterations; i++ {
+			if _, err := store.Load(snapshot.ID); err != nil {
+				select {
+				case errs <- err:
+				default:
+				}
+				return
+			}
+		}
+	}()
+	go func() {
+		defer wg.Done()
+		<-start
+		for i := 0; i < iterations; i++ {
+			snapshot.UpdatedAt = snapshot.UpdatedAt.Add(time.Nanosecond)
+			if err := store.Save(snapshot); err != nil {
+				select {
+				case errs <- err:
+				default:
+				}
+				return
+			}
+		}
+	}()
+	close(start)
+	wg.Wait()
+	select {
+	case err := <-errs:
+		t.Fatalf("concurrent session access failed: %v", err)
+	default:
 	}
 }
 

@@ -590,6 +590,9 @@ func TestGGUFMetadataRemovedForMissingBlob(t *testing.T) {
 }
 
 func TestGGUFMetadataNotPublishedAfterDelete(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("deletes the blob while GetModel holds it open; Windows cannot unlink open files")
+	}
 	gin.SetMode(gin.TestMode)
 	t.Setenv("OLLAMA_MODELS", t.TempDir())
 
