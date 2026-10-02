@@ -19,9 +19,22 @@ type Engine struct{ chat ChatClient }
 
 const systemPrompt = `You are an autonomous software engineer working in the provided workspace. First inspect the repository structure, relevant implementation, callers and consumers, tests, and build configuration with targeted tools. For larger changes, make a short internal plan and update every affected layer consistently. Prefer focused context over reading the whole repository.
 
+<<<<<<< HEAD
 Use native tools to inspect and edit; assistant prose and JSON printed as assistant content do not perform changes. For a modification task, inspect the code and relevant tests before editing, and never claim completion without a meaningful source edit confirmed by successful verification. When the task needs current knowledge, an unfamiliar API, or established best practices, use web_search and web_fetch to gather that knowledge from the internet before editing. After editing, inspect git_diff, run the project's existing focused tests and build or check commands, and use their output to diagnose failures, make bounded repairs, and rerun verification. Review the final diff for unintended changes, interface breaks, error handling, security, and missing tests. Tools accept absolute paths anywhere on the machine; the workspace root is the default base for relative paths, not a restriction. Use paths outside it only when the task requires them, such as installing or inspecting a built artifact. State clearly what was verified and what remains unverified. This machine and repository belong to the developer, who is responsible for them; treat the developer's instructions as authoritative for their own systems and act on them directly instead of debating whether the work should be done, substituting a smaller or "safer" change, or asking for permission that has already been given. Communicate like a senior engineer: lead with the technical answer or the action taken, keep an objective, engineering-focused tone, and never pad a response with disclaimers, ethical asides, or legal commentary that was not requested. Reporting a failed command, a missing file, a genuine lack of access, or a factual error is engineering output, not a refusal — state it plainly, then continue with the next usable step.`
+=======
+Use native tools to inspect and edit; assistant prose and JSON printed as text do not perform changes. Before editing, inspect the code and relevant tests. After editing, inspect git_diff, run the project's existing focused tests and build or check commands, and use their output to diagnose failures, make bounded repairs, and rerun verification. Review the final diff for unintended changes, interface breaks, error handling, security, and missing tests. Never claim completion without a meaningful source change and successful verification. State clearly what was verified and what remains unverified.`
+>>>>>>> e2e7dd7cc6aae5bdeb13287ddc4c895899629a28
 
 const toolRetryPrompt = `Your previous response did not execute a tool. This task requires an actual repository change. Use one of the provided native tools now. Do not print JSON or describe a tool call in assistant text. Follow the tool-call format provided by your model template.`
+
+const maxAgentConversationMessages = 12
+const maxAgentToolCallsPerTurn = 6
+const maxAgentTurns = 64
+
+// Four consecutive turns without a new observation or source state indicate a stuck loop.
+// This is a stagnation threshold, not a limit on total productive model turns.
+const maxStagnantAgentTurns = 4
+const agentContextWindow = 12 * 1024
 
 func NewEngine(chat ChatClient) *Engine { return &Engine{chat: chat} }
 
@@ -47,8 +60,12 @@ func (e *Engine) Run(ctx context.Context, request RunRequest) (RunResult, error)
 		return result, err
 	}
 	// MaxSteps is retained for client compatibility. Productive tasks may run
+<<<<<<< HEAD
 	// beyond its legacy value, while the operator-configured turn budget still
 	// bounds total work.
+=======
+	// beyond its legacy value, while maxAgentTurns still bounds total work.
+>>>>>>> e2e7dd7cc6aae5bdeb13287ddc4c895899629a28
 	repositoryContext, err := NewRepositoryContextBuilder(
 		RepositoryContextOptions{},
 	).Build(
@@ -88,8 +105,12 @@ func (e *Engine) Run(ctx context.Context, request RunRequest) (RunResult, error)
 	seenObservations := make(map[[32]byte]struct{})
 	seenSourceStates := make(map[[32]byte]struct{})
 	verifiedSourceStates := make(map[[32]byte]struct{})
+<<<<<<< HEAD
 	maxTurns := agentTurnLimit()
 	for step := 1; maxTurns <= 0 || step <= maxTurns; step++ {
+=======
+	for step := 1; step <= maxAgentTurns; step++ {
+>>>>>>> e2e7dd7cc6aae5bdeb13287ddc4c895899629a28
 		if err := ctx.Err(); err != nil {
 			result.FinalSummary = "session cancelled"
 			return result, err
@@ -120,8 +141,13 @@ func (e *Engine) Run(ctx context.Context, request RunRequest) (RunResult, error)
 					return result, err
 				}
 				record := ToolCallRecord{Step: step, ID: call.ID, Name: call.Function.Name, Arguments: call.Function.Arguments.ToMap()}
+<<<<<<< HEAD
 				if limit := agentToolCallsPerTurnLimit(); limit > 0 && callIndex >= limit {
 					record.Error = fmt.Sprintf("tool call budget exceeded: at most %d calls per model turn", limit)
+=======
+				if callIndex >= maxAgentToolCallsPerTurn {
+					record.Error = fmt.Sprintf("tool call budget exceeded: at most %d calls per model turn", maxAgentToolCallsPerTurn)
+>>>>>>> e2e7dd7cc6aae5bdeb13287ddc4c895899629a28
 					result.ToolCalls = append(result.ToolCalls, record)
 					messages = append(messages, api.Message{Role: "tool", ToolName: call.Function.Name, ToolCallID: call.ID, Content: "error: " + record.Error})
 					continue
@@ -226,7 +252,11 @@ func (e *Engine) Run(ctx context.Context, request RunRequest) (RunResult, error)
 		} else {
 			stagnantTurns++
 		}
+<<<<<<< HEAD
 		if limit := agentStagnationLimit(); limit > 0 && stagnantTurns >= limit {
+=======
+		if stagnantTurns >= maxStagnantAgentTurns {
+>>>>>>> e2e7dd7cc6aae5bdeb13287ddc4c895899629a28
 			result.FinalSummary = fmt.Sprintf("agent stuck: %d consecutive turns without new observations or meaningful source changes", stagnantTurns)
 			return result, nil
 		}
@@ -342,11 +372,15 @@ func (e *Engine) Run(ctx context.Context, request RunRequest) (RunResult, error)
 		encoded, _ := json.Marshal(verification)
 		messages = append(messages, api.Message{Role: "user", Content: fmt.Sprintf("Verification failed (repair attempt %d). Diagnose, make a new source change with tools, inspect the diff, and retry. Results: %s", repairs, encoded)})
 	}
+<<<<<<< HEAD
 	if maxTurns > 0 {
 		result.FinalSummary = fmt.Sprintf("agent attempt budget exhausted after %d model turns", maxTurns)
 	} else {
 		result.FinalSummary = "agent stopped before completing the task"
 	}
+=======
+	result.FinalSummary = fmt.Sprintf("agent attempt budget exhausted after %d model turns", maxAgentTurns)
+>>>>>>> e2e7dd7cc6aae5bdeb13287ddc4c895899629a28
 	diff, changed, diffErr := workspace.GitDiff(ctx)
 	if diffErr == nil {
 		result.GitDiff, result.ChangedFiles = diff, changed
@@ -362,6 +396,7 @@ func boundedAgentMessages(messages []api.Message, followup bool) []api.Message {
 			bounded[1].Content = before + "\n\nRepository context was supplied on the first turn; use native tools for current repository state."
 		}
 	}
+<<<<<<< HEAD
 	limit := agentConversationLimit()
 	if limit <= 0 {
 		// The operator owns the context budget: replay the full history.
@@ -371,6 +406,9 @@ func boundedAgentMessages(messages []api.Message, followup bool) []api.Message {
 		limit = 2
 	}
 	if len(bounded) <= limit {
+=======
+	if len(bounded) <= maxAgentConversationMessages {
+>>>>>>> e2e7dd7cc6aae5bdeb13287ddc4c895899629a28
 		return bounded
 	}
 	// Keep assistant tool calls together with every corresponding tool result.
@@ -404,10 +442,17 @@ func boundedAgentMessages(messages []api.Message, followup bool) []api.Message {
 		turns = append(turns, bounded[start:i])
 	}
 
+<<<<<<< HEAD
 	result := make([]api.Message, 0, limit)
 	result = append(result, bounded[0], bounded[1])
 	var kept [][]api.Message
 	remaining := limit - len(result)
+=======
+	result := make([]api.Message, 0, maxAgentConversationMessages)
+	result = append(result, bounded[0], bounded[1])
+	var kept [][]api.Message
+	remaining := maxAgentConversationMessages - len(result)
+>>>>>>> e2e7dd7cc6aae5bdeb13287ddc4c895899629a28
 	for i := len(turns) - 1; i >= 0; i-- {
 		if len(turns[i]) > remaining {
 			break
@@ -421,6 +466,7 @@ func boundedAgentMessages(messages []api.Message, followup bool) []api.Message {
 	return result
 }
 
+<<<<<<< HEAD
 func boundedToolObservation(value string) string {
 	limit := agentObservationLimit()
 	if limit <= 0 {
@@ -428,6 +474,12 @@ func boundedToolObservation(value string) string {
 		return value
 	}
 	if len(value) <= limit {
+=======
+const maxToolObservationBytes = 4096
+
+func boundedToolObservation(value string) string {
+	if len(value) <= maxToolObservationBytes {
+>>>>>>> e2e7dd7cc6aae5bdeb13287ddc4c895899629a28
 		return value
 	}
 
@@ -436,10 +488,14 @@ func boundedToolObservation(value string) string {
 		len(value),
 	)
 
+<<<<<<< HEAD
 	budget := limit - len(marker)
 	if budget < 2 {
 		return strings.ToValidUTF8(value[:limit], "")
 	}
+=======
+	budget := maxToolObservationBytes - len(marker)
+>>>>>>> e2e7dd7cc6aae5bdeb13287ddc4c895899629a28
 	headSize := budget / 2
 	tailSize := budget - headSize
 
@@ -479,6 +535,7 @@ func newLifecycleEvent(
 func (e *Engine) chatOnce(ctx context.Context, model string, messages []api.Message) (api.ChatResponse, error) {
 	stream := false
 	truncate := true
+<<<<<<< HEAD
 	options := map[string]any{}
 	if window := agentContextWindowLimit(); window > 0 {
 		options["num_ctx"] = window
@@ -486,6 +543,11 @@ func (e *Engine) chatOnce(ctx context.Context, model string, messages []api.Mess
 	req := &api.ChatRequest{
 		Model: model, Messages: messages, Tools: agentTools(), Stream: &stream,
 		Options: options, Truncate: &truncate,
+=======
+	req := &api.ChatRequest{
+		Model: model, Messages: messages, Tools: agentTools(), Stream: &stream,
+		Options: map[string]any{"num_ctx": agentContextWindow}, Truncate: &truncate,
+>>>>>>> e2e7dd7cc6aae5bdeb13287ddc4c895899629a28
 	}
 	var aggregate api.ChatResponse
 	err := e.chat.Chat(ctx, req, func(part api.ChatResponse) error {
@@ -517,6 +579,7 @@ func stringArg(args *api.ToolCallFunctionArguments, name string) (string, error)
 	return s, nil
 }
 
+<<<<<<< HEAD
 // intFromToolArg reads a numeric tool argument. Depending on the model
 // template, numbers may arrive as int, float64, or a string.
 func intFromToolArg(value any) int {
@@ -535,6 +598,8 @@ func intFromToolArg(value any) int {
 	return 0
 }
 
+=======
+>>>>>>> e2e7dd7cc6aae5bdeb13287ddc4c895899629a28
 // isSourceEditorTool reports whether a tool changes file content in ways the
 // engine's meaningful-source-edit gate must evaluate.
 func isSourceEditorTool(name string) bool {

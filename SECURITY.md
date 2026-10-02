@@ -14,3 +14,9 @@ Please include the following details in your report:
 
 While the maintainer team does its best to secure Ollama, users are encouraged to implement their own security best practices, such as:
 
+<<<<<<< HEAD
+=======
+## Contact
+
+For any other questions or concerns related to security, please contact us at hello@ollama.com
+>>>>>>> e2e7dd7cc6aae5bdeb13287ddc4c895899629a28

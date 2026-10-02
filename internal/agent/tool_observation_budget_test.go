@@ -5,6 +5,7 @@ import (
 	"testing"
 )
 
+<<<<<<< HEAD
 func TestBoundedToolObservationUnrestrictedByDefault(t *testing.T) {
 	t.Setenv("OLLAMA_AGENT_OBSERVATION_BYTES", "")
 
@@ -18,14 +19,26 @@ func TestBoundedToolObservationRespectsOperatorLimit(t *testing.T) {
 	t.Setenv("OLLAMA_AGENT_OBSERVATION_BYTES", "4096")
 
 	short := "small output"
+=======
+func TestBoundedToolObservation(t *testing.T) {
+	short := "small output"
+
+>>>>>>> e2e7dd7cc6aae5bdeb13287ddc4c895899629a28
 	if got := boundedToolObservation(short); got != short {
 		t.Fatal("short output must remain unchanged")
 	}
 
 	large := "START" + strings.Repeat("x", 100000) + "END"
+<<<<<<< HEAD
 	got := boundedToolObservation(large)
 
 	if len(got) > 4096 {
+=======
+
+	got := boundedToolObservation(large)
+
+	if len(got) > maxToolObservationBytes {
+>>>>>>> e2e7dd7cc6aae5bdeb13287ddc4c895899629a28
 		t.Fatalf("output size = %d; exceeds limit", len(got))
 	}
 

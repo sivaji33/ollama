@@ -141,9 +141,12 @@ func TestEngineRetriesTextOnlyResponseBeforeAnyEdit(t *testing.T) {
 }
 
 func TestEngineBoundsFollowupConversationAndDoesNotRepeatRepositoryInventory(t *testing.T) {
+<<<<<<< HEAD
 	// The operator opted into a bounded replay window for this run.
 	t.Setenv("OLLAMA_AGENT_CONVERSATION_MESSAGES", "12")
 
+=======
+>>>>>>> e2e7dd7cc6aae5bdeb13287ddc4c895899629a28
 	root := initRepo(t)
 	readCall := func(id string) api.ChatResponse {
 		return api.ChatResponse{Message: api.Message{Role: "assistant", ToolCalls: []api.ToolCall{{
@@ -170,8 +173,13 @@ func TestEngineBoundsFollowupConversationAndDoesNotRepeatRepositoryInventory(t *
 		if strings.Contains(request.Messages[1].Content, "Tracked files:") {
 			t.Fatalf("followup %d repeated repository inventory", i+2)
 		}
+<<<<<<< HEAD
 		if limit := agentConversationLimit(); len(request.Messages) > limit {
 			t.Fatalf("followup %d messages = %d, want <= %d", i+2, len(request.Messages), limit)
+=======
+		if len(request.Messages) > maxAgentConversationMessages {
+			t.Fatalf("followup %d messages = %d, want <= %d", i+2, len(request.Messages), maxAgentConversationMessages)
+>>>>>>> e2e7dd7cc6aae5bdeb13287ddc4c895899629a28
 		}
 	}
 }
@@ -238,13 +246,22 @@ func TestAgentFirstRequestRequiresNativeToolUse(t *testing.T) {
 	if req.Stream == nil || *req.Stream {
 		t.Fatal("agent model request must disable streaming")
 	}
+<<<<<<< HEAD
 	if want := agentContextWindowLimit(); req.Options["num_ctx"] != want {
 		t.Fatalf("agent num_ctx = %v, want %d", req.Options["num_ctx"], want)
+=======
+	if got := req.Options["num_ctx"]; got != agentContextWindow {
+		t.Fatalf("agent num_ctx = %v, want %d", got, agentContextWindow)
+>>>>>>> e2e7dd7cc6aae5bdeb13287ddc4c895899629a28
 	}
 	if req.Truncate == nil || !*req.Truncate {
 		t.Fatal("agent request must enable bounded server-side truncation")
 	}
+<<<<<<< HEAD
 	wantNames := []string{"search_files", "list_files", "read_file", "write_file", "apply_patch", "multi_edit", "delete_file", "move_file", "shell", "git_diff", "web_search", "web_fetch"}
+=======
+	wantNames := []string{"search_files", "list_files", "read_file", "write_file", "apply_patch", "multi_edit", "delete_file", "move_file", "shell", "git_diff"}
+>>>>>>> e2e7dd7cc6aae5bdeb13287ddc4c895899629a28
 	if len(req.Tools) != len(wantNames) {
 		t.Fatalf("tools = %d, want %d", len(req.Tools), len(wantNames))
 	}
