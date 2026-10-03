@@ -29,11 +29,7 @@ func TestWriteFileCreatesNewFileAndRewritesExisting(t *testing.T) {
 	}
 }
 
-<<<<<<< HEAD
 func TestWriteFileRejectsNoopAndOversize(t *testing.T) {
-=======
-func TestWriteFileRejectsNoopOversizeAndEscape(t *testing.T) {
->>>>>>> e2e7dd7cc6aae5bdeb13287ddc4c895899629a28
 	root := t.TempDir()
 	if err := os.WriteFile(filepath.Join(root, "main.go"), []byte("package main\n"), 0o600); err != nil {
 		t.Fatal(err)
@@ -45,7 +41,6 @@ func TestWriteFileRejectsNoopOversizeAndEscape(t *testing.T) {
 	if _, err := w.WriteFile("big.go", strings.Repeat("x", maxFileBytes+1)); err == nil {
 		t.Fatal("expected oversize rejection")
 	}
-<<<<<<< HEAD
 }
 
 func TestWriteFileAllowsPathsOutsideRoot(t *testing.T) {
@@ -69,10 +64,6 @@ func TestWriteFileAllowsPathsOutsideRoot(t *testing.T) {
 	}
 	if b, err := os.ReadFile(filepath.Join(outsideDir, "traversal.txt")); err != nil || string(b) != "x\n" {
 		t.Fatalf("traversal read back: %q %v", b, err)
-=======
-	if _, err := w.WriteFile(filepath.Join("..", "outside.txt"), "x"); err == nil {
-		t.Fatal("expected traversal rejection")
->>>>>>> e2e7dd7cc6aae5bdeb13287ddc4c895899629a28
 	}
 }
 
@@ -129,7 +120,6 @@ func TestListFilesBoundsResults(t *testing.T) {
 	}
 }
 
-<<<<<<< HEAD
 func TestListFilesAllowsPatternOutsideRoot(t *testing.T) {
 	root := t.TempDir()
 	outsideDir := t.TempDir()
@@ -151,8 +141,6 @@ func TestListFilesAllowsPatternOutsideRoot(t *testing.T) {
 	}
 }
 
-=======
->>>>>>> e2e7dd7cc6aae5bdeb13287ddc4c895899629a28
 func TestDeleteFileRemovesRegularFileOnly(t *testing.T) {
 	root := t.TempDir()
 	if err := os.WriteFile(filepath.Join(root, "gone.go"), []byte("package gone\n"), 0o600); err != nil {
