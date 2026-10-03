@@ -6,10 +6,14 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
 	agentpkg "github.com/ollama/ollama/internal/agent"
+	agenttools "github.com/ollama/ollama/internal/agent/tools"
 )
 
 type liveSessionStateRunner struct {
@@ -22,6 +26,47 @@ type liveFirstPassStateRunner struct {
 	sessionID chan string
 	published chan agentpkg.SessionEventType
 	release   chan struct{}
+}
+
+type liveFileDiffRunner struct {
+	published chan struct{}
+	release   chan struct{}
+}
+
+func (r *liveFileDiffRunner) Run(
+	_ context.Context,
+	request agentpkg.RunRequest,
+) (agentpkg.RunResult, error) {
+	checkpoint, err := agenttools.NewFilesystemCheckpoint(request.Workspace)
+	if err != nil {
+		return agentpkg.RunResult{}, err
+	}
+	defer checkpoint.Close()
+	path := filepath.Join(request.Workspace, "live-change.go")
+	if err := checkpoint.BeforeMutation(path); err != nil {
+		return agentpkg.RunResult{}, err
+	}
+	if err := os.WriteFile(path, []byte("package main\n"), 0o600); err != nil {
+		return agentpkg.RunResult{}, err
+	}
+	diff, err := checkpoint.Diff()
+	if err != nil {
+		return agentpkg.RunResult{}, err
+	}
+	safeDiff := agenttools.RedactFilesystemDiff(diff)
+	event := agentpkg.SessionEvent{
+		Type:           agentpkg.EventFilesystemChange,
+		Timestamp:      time.Now().UTC(),
+		Path:           "live-change.go",
+		FilesystemDiff: &safeDiff,
+	}
+	result := agentpkg.RunResult{Status: agentpkg.StatusSuccess, LifecycleEvents: []agentpkg.SessionEvent{event}}
+	if err := request.OnLifecycleEvent(event); err != nil {
+		return result, err
+	}
+	close(r.published)
+	<-r.release
+	return result, nil
 }
 
 func (r *liveFirstPassStateRunner) Run(
@@ -117,6 +162,86 @@ func TestAgentSessionUpdatesFirstPassStatesWhileRunIsActive(t *testing.T) {
 		agentpkg.EventCompleted,
 	}
 	assertLifecycleEventRelativeOrder(t, events, wantOrder)
+}
+
+func TestAgentSessionExposesRealFileDiffBeforeAgentFinishes(t *testing.T) {
+	root := t.TempDir()
+	runner := &liveFileDiffRunner{
+		published: make(chan struct{}),
+		release:   make(chan struct{}),
+	}
+	defer func() {
+		select {
+		case <-runner.release:
+		default:
+			close(runner.release)
+		}
+	}()
+	server, store := newSessionAPITestServer(t, runner)
+	router := sessionAPIRouter(server)
+	body, err := json.Marshal(map[string]string{
+		"workspace": root,
+		"task":      "write a source file",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := httptest.NewRequest(http.MethodPost, "/api/agent/session", bytes.NewReader(body))
+	request.Header.Set("Content-Type", "application/json")
+	started := httptest.NewRecorder()
+	router.ServeHTTP(started, request)
+	if started.Code != http.StatusOK {
+		t.Fatalf("session start status %d: %s", started.Code, started.Body.String())
+	}
+	var accepted agentpkg.SessionSnapshot
+	if err := json.Unmarshal(started.Body.Bytes(), &accepted); err != nil {
+		t.Fatal(err)
+	}
+	if accepted.ID == "" {
+		t.Fatal("agent session did not return its ID")
+	}
+	select {
+	case <-runner.published:
+	case <-time.After(3 * time.Second):
+		t.Fatal("agent did not publish its file diff")
+	}
+
+	eventsRecorder := httptest.NewRecorder()
+	router.ServeHTTP(eventsRecorder, httptest.NewRequest(
+		http.MethodGet,
+		"/api/agent/session/"+accepted.ID+"/events",
+		nil,
+	))
+	if eventsRecorder.Code != http.StatusOK {
+		t.Fatalf("events status %d: %s", eventsRecorder.Code, eventsRecorder.Body.String())
+	}
+	var events []agentpkg.SessionEvent
+	if err := json.Unmarshal(eventsRecorder.Body.Bytes(), &events); err != nil {
+		t.Fatal(err)
+	}
+	var change *agentpkg.SessionEvent
+	for i := range events {
+		if events[i].Type == agentpkg.EventFilesystemChange {
+			change = &events[i]
+			break
+		}
+	}
+	if change == nil || change.FilesystemDiff == nil || len(change.FilesystemDiff.Files) != 1 {
+		t.Fatalf("live file-change event is missing its real diff: %+v", events)
+	}
+	file := change.FilesystemDiff.Files[0]
+	if file.Path != "live-change.go" || !strings.Contains(file.Unified, "+package main") {
+		t.Fatalf("live diff filename or code is wrong: %+v", file)
+	}
+	snapshot, err := store.Load(accepted.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if snapshot.State == agentpkg.SessionStateVerified || snapshot.State == agentpkg.SessionStateFailed {
+		t.Fatalf("file diff arrived only after the task had finished: %q", snapshot.State)
+	}
+	close(runner.release)
+	waitForPersistedSessionEvent(t, store, accepted.ID, agentpkg.EventCompleted)
 }
 
 func assertLifecycleEventRelativeOrder(

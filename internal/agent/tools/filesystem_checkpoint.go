@@ -8,12 +8,16 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"sync"
 
 	"github.com/pmezard/go-difflib/difflib"
 )
+
+var sensitiveAssignmentPattern = regexp.MustCompile(`(?i)^(\s*(?:export\s+)?["']?[\w.-]*(?:api[_-]?key|secret|password|passwd|token|credential|private[_-]?key|access[_-]?key|authorization)[\w.-]*["']?\s*[:=]\s*)(.*)$`)
+var bearerTokenPattern = regexp.MustCompile(`(?i)\b(Bearer\s+)[A-Za-z0-9._~+/-]+=*`)
 
 type FilesystemChange struct {
 	Path       string `json:"path"`
@@ -33,6 +37,74 @@ type FilesystemDiff struct {
 	Unified   string             `json:"unified_diff"`
 	Additions int                `json:"additions"`
 	Deletions int                `json:"deletions"`
+}
+
+func RedactFilesystemDiff(diff FilesystemDiff) FilesystemDiff {
+	diff.Unified = ""
+	for i := range diff.Files {
+		change := &diff.Files[i]
+		envFile := isEnvironmentFile(change.Path)
+		change.Before = redactFileContent(change.Before, envFile)
+		change.After = redactFileContent(change.After, envFile)
+		change.Unified = redactUnifiedDiff(change.Unified, envFile)
+		diff.Unified += change.Unified
+	}
+	return diff
+}
+
+func isEnvironmentFile(path string) bool {
+	name := strings.ToLower(filepath.Base(filepath.FromSlash(path)))
+	return name == ".env" || strings.HasPrefix(name, ".env.")
+}
+
+func redactFileContent(content string, envFile bool) string {
+	if content == "" {
+		return content
+	}
+	lines := strings.SplitAfter(content, "\n")
+	for i, line := range lines {
+		ending := ""
+		if strings.HasSuffix(line, "\n") {
+			ending = "\n"
+			line = strings.TrimSuffix(line, ending)
+		}
+		lines[i] = redactContentLine(line, envFile) + ending
+	}
+	return strings.Join(lines, "")
+}
+
+func redactUnifiedDiff(diff string, envFile bool) string {
+	lines := strings.SplitAfter(diff, "\n")
+	for i, line := range lines {
+		ending := ""
+		if strings.HasSuffix(line, "\n") {
+			ending = "\n"
+			line = strings.TrimSuffix(line, ending)
+		}
+		if strings.HasPrefix(line, "+") && !strings.HasPrefix(line, "+++") {
+			lines[i] = "+" + redactContentLine(line[1:], envFile) + ending
+		} else if strings.HasPrefix(line, "-") && !strings.HasPrefix(line, "---") {
+			lines[i] = "-" + redactContentLine(line[1:], envFile) + ending
+		} else if strings.HasPrefix(line, " ") {
+			lines[i] = " " + redactContentLine(line[1:], envFile) + ending
+		}
+	}
+	return strings.Join(lines, "")
+}
+
+func redactContentLine(line string, envFile bool) string {
+	if strings.TrimSpace(line) == "" || strings.HasPrefix(strings.TrimSpace(line), "#") {
+		return line
+	}
+	if envFile {
+		if separator := strings.IndexByte(line, '='); separator >= 0 {
+			return line[:separator+1] + "[REDACTED]"
+		}
+	}
+	if match := sensitiveAssignmentPattern.FindStringSubmatch(line); len(match) == 3 {
+		return match[1] + "[REDACTED]"
+	}
+	return bearerTokenPattern.ReplaceAllString(line, "${1}[REDACTED]")
 }
 
 type checkpointEntry struct {

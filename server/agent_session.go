@@ -17,6 +17,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/ollama/ollama/envconfig"
 	agentpkg "github.com/ollama/ollama/internal/agent"
+	agenttools "github.com/ollama/ollama/internal/agent/tools"
 )
 
 // editorContextLimit returns the maximum accepted editor-context size in
@@ -256,10 +257,24 @@ func (s *Server) AgentSessionCreateHandler(c *gin.Context) {
 		runner = agentpkg.NewEngine(serverChatClient{server: s})
 	}
 
+	var checkpoint *agenttools.FilesystemCheckpoint
+	if s.agentRunner == nil {
+		checkpoint, err = agenttools.NewFilesystemCheckpoint(request.Workspace)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Errorf("create agent filesystem checkpoint: %w", err).Error()})
+			return
+		}
+		request.FilesystemCheckpoint = checkpoint
+	}
 	runContext, cancel := context.WithCancel(context.Background())
 
 	if !s.agentSessionCtl.register(request.SessionID, cancel) {
 		cancel()
+		if checkpoint != nil {
+			if err := checkpoint.Close(); err != nil {
+				slog.Error("close rejected agent filesystem checkpoint", "session_id", request.SessionID, "error", err)
+			}
+		}
 		c.JSON(
 			http.StatusConflict,
 			gin.H{"error": "session is already active"},
@@ -349,6 +364,15 @@ func (s *Server) AgentSessionContinueHandler(c *gin.Context) {
 	request.Model = snapshot.Model
 	request.Workspace = snapshot.Workspace
 	request.StepOffset = snapshot.StepsExecuted
+	var checkpoint *agenttools.FilesystemCheckpoint
+	if s.agentRunner == nil {
+		checkpoint, err = agenttools.NewFilesystemCheckpoint(request.Workspace)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Errorf("create agent filesystem checkpoint: %w", err).Error()})
+			return
+		}
+		request.FilesystemCheckpoint = checkpoint
+	}
 
 	runContext, cancel := context.WithCancel(context.Background())
 
@@ -362,6 +386,11 @@ func (s *Server) AgentSessionContinueHandler(c *gin.Context) {
 	if _, active := ctl.cancels[sessionID]; active {
 		ctl.mu.Unlock()
 		cancel()
+		if checkpoint != nil {
+			if err := checkpoint.Close(); err != nil {
+				slog.Error("close rejected agent filesystem checkpoint", "session_id", sessionID, "error", err)
+			}
+		}
 
 		c.JSON(
 			http.StatusConflict,
@@ -377,6 +406,11 @@ func (s *Server) AgentSessionContinueHandler(c *gin.Context) {
 	if err := store.Save(snapshot); err != nil {
 		ctl.mu.Unlock()
 		cancel()
+		if checkpoint != nil {
+			if err := checkpoint.Close(); err != nil {
+				slog.Error("close failed agent filesystem checkpoint", "session_id", sessionID, "error", err)
+			}
+		}
 
 		c.JSON(
 			http.StatusInternalServerError,
@@ -395,6 +429,11 @@ func (s *Server) AgentSessionContinueHandler(c *gin.Context) {
 	); err != nil {
 		ctl.mu.Unlock()
 		cancel()
+		if checkpoint != nil {
+			if err := checkpoint.Close(); err != nil {
+				slog.Error("close failed agent filesystem checkpoint", "session_id", sessionID, "error", err)
+			}
+		}
 
 		c.JSON(
 			http.StatusInternalServerError,
@@ -453,6 +492,13 @@ func (s *Server) launchAgentSession(
 ) {
 	go func() {
 		defer cancel()
+		if request.FilesystemCheckpoint != nil {
+			defer func() {
+				if err := request.FilesystemCheckpoint.Close(); err != nil {
+					slog.Error("close agent filesystem checkpoint", "session_id", request.SessionID, "error", err)
+				}
+			}()
+		}
 
 		result, runErr := runner.Run(runContext, request)
 		if runErr != nil {
@@ -722,6 +768,11 @@ func (s *Server) persistLiveAgentLifecycleEvent(
 	sessionID string,
 	event agentpkg.SessionEvent,
 ) error {
+	if event.FilesystemDiff != nil {
+		safeDiff := agenttools.RedactFilesystemDiff(*event.FilesystemDiff)
+		event.FilesystemDiff = &safeDiff
+	}
+
 	ctl := &s.agentSessionCtl
 
 	ctl.mu.Lock()

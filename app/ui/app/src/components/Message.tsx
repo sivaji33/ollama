@@ -5,6 +5,7 @@ import { ImageThumbnail } from "./ImageThumbnail";
 import { isImageFile } from "@/utils/imageUtils";
 import CopyButton from "./CopyButton";
 import React, { useState, useMemo, useRef } from "react";
+import type { AgentFileChange } from "@/api";
 
 const Message = React.memo(
   ({
@@ -266,6 +267,14 @@ function ToolRoleContent({
   const rawToolResult = (message as any).tool_result;
   const toolName = (message as any).tool_name || (message as any).toolName;
   const [isCollapsed, setIsCollapsed] = useState(true);
+
+  if (toolName === "agent_file_changes") {
+    const files = (rawToolResult as { files?: AgentFileChange[] } | undefined)
+      ?.files;
+    if (files?.length) {
+      return <AgentFileChangesView files={files} />;
+    }
+  }
 
   if (browserToolResult && typeof browserToolResult === "object") {
     return (
@@ -871,6 +880,45 @@ function UserMessage({
         </div>
       </div>
     </div>
+  );
+}
+
+function AgentFileChangesView({ files }: { files: AgentFileChange[] }) {
+  return (
+    <section
+      className="flex flex-col gap-2"
+      aria-label="Agent file changes"
+      data-testid="agent-file-changes"
+    >
+      {files.map((file) => {
+        const action =
+          file.status === "created"
+            ? "Added"
+            : file.status === "deleted"
+              ? "Deleted"
+              : "Modified";
+        return (
+          <details
+            key={`${file.old_path ?? ""}:${file.path}`}
+            className="rounded-md border border-neutral-200 dark:border-neutral-700"
+          >
+            <summary className="cursor-pointer list-none px-3 py-2 text-sm">
+              <span className="mr-2 text-neutral-500">{action}</span>
+              {file.old_path && file.old_path !== file.path && (
+                <span className="mr-1 font-mono text-xs">{file.old_path} →</span>
+              )}
+              <span className="font-mono text-xs">{file.path}</span>
+              <span className="float-right font-mono text-xs text-neutral-500">
+                +{file.additions} / -{file.deletions}
+              </span>
+            </summary>
+            <pre className="max-h-96 overflow-auto border-t border-neutral-200 bg-neutral-50 p-3 font-mono text-xs dark:border-neutral-700 dark:bg-neutral-950">
+              {file.unified_diff}
+            </pre>
+          </details>
+        );
+      })}
+    </section>
   );
 }
 

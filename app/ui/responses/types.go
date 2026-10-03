@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/ollama/ollama/app/store"
+	agenttools "github.com/ollama/ollama/internal/agent/tools"
 	"github.com/ollama/ollama/types/model"
 )
 
@@ -55,7 +56,7 @@ type ModelCapabilitiesResponse struct {
 
 // ChatEvent is for regular chat messages and assistant interactions
 type ChatEvent struct {
-	EventName string `json:"eventName" ts_type:"\"chat\" | \"thinking\" | \"assistant_with_tools\" | \"tool_call\" | \"tool\" | \"tool_result\" | \"done\" | \"chat_created\""`
+	EventName string `json:"eventName" ts_type:"\"chat\" | \"thinking\" | \"assistant_with_tools\" | \"tool_call\" | \"tool\" | \"tool_result\" | \"agent_file_change\" | \"done\" | \"chat_created\""`
 
 	// Chat/Assistant message fields
 	Content           *string    `json:"content,omitempty"`
@@ -64,11 +65,12 @@ type ChatEvent struct {
 	ThinkingTimeEnd   *time.Time `json:"thinkingTimeEnd,omitempty" ts_type:"Date | undefined" ts_transform:"__VALUE__ && new Date(__VALUE__)"`
 
 	// Tool-related fields
-	ToolCalls      []store.ToolCall `json:"toolCalls,omitempty"`
-	ToolCall       *store.ToolCall  `json:"toolCall,omitempty"`
-	ToolName       *string          `json:"toolName,omitempty"`
-	ToolResult     *bool            `json:"toolResult,omitempty"`
-	ToolResultData any              `json:"toolResultData,omitempty"`
+	ToolCalls        []store.ToolCall              `json:"toolCalls,omitempty"`
+	ToolCall         *store.ToolCall               `json:"toolCall,omitempty"`
+	ToolName         *string                       `json:"toolName,omitempty"`
+	ToolResult       *bool                         `json:"toolResult,omitempty"`
+	ToolResultData   any                           `json:"toolResultData,omitempty"`
+	AgentFileChanges []agenttools.FilesystemChange `json:"agentFileChanges,omitempty"`
 
 	// Chat creation fields
 	ChatID *string `json:"chatId,omitempty"`

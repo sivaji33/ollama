@@ -323,8 +323,34 @@ export class ModelCapabilitiesResponse {
         this.capabilities = source["capabilities"];
     }
 }
+export class FilesystemChange {
+    path: string;
+    old_path?: string;
+    status: string;
+    before?: string;
+    after?: string;
+    unified_diff: string;
+    additions: number;
+    deletions: number;
+    before_lines: number;
+    after_lines: number;
+
+    constructor(source: any = {}) {
+        if ('string' === typeof source) source = JSON.parse(source);
+        this.path = source["path"];
+        this.old_path = source["old_path"];
+        this.status = source["status"];
+        this.before = source["before"];
+        this.after = source["after"];
+        this.unified_diff = source["unified_diff"];
+        this.additions = source["additions"];
+        this.deletions = source["deletions"];
+        this.before_lines = source["before_lines"];
+        this.after_lines = source["after_lines"];
+    }
+}
 export class ChatEvent {
-    eventName: "chat" | "thinking" | "assistant_with_tools" | "tool_call" | "tool" | "tool_result" | "done" | "chat_created";
+    eventName: "chat" | "thinking" | "assistant_with_tools" | "tool_call" | "tool" | "tool_result" | "agent_file_change" | "done" | "chat_created";
     content?: string;
     thinking?: string;
     thinkingTimeStart?: Date | undefined;
@@ -334,6 +360,7 @@ export class ChatEvent {
     toolName?: string;
     toolResult?: boolean;
     toolResultData?: any;
+    agentFileChanges?: FilesystemChange[];
     chatId?: string;
     toolState?: any;
 
@@ -349,6 +376,7 @@ export class ChatEvent {
         this.toolName = source["toolName"];
         this.toolResult = source["toolResult"];
         this.toolResultData = source["toolResultData"];
+        this.agentFileChanges = this.convertValues(source["agentFileChanges"], FilesystemChange);
         this.chatId = source["chatId"];
         this.toolState = source["toolState"];
     }
@@ -418,6 +446,7 @@ export class Settings {
     OnboardingVersion: number;
     AutoUpdateEnabled: boolean;
     ClaudeDesktopUsed: boolean;
+    CodexDesktopUsed: boolean;
 
     constructor(source: any = {}) {
         if ('string' === typeof source) source = JSON.parse(source);
@@ -439,6 +468,7 @@ export class Settings {
         this.OnboardingVersion = source["OnboardingVersion"];
         this.AutoUpdateEnabled = source["AutoUpdateEnabled"];
         this.ClaudeDesktopUsed = source["ClaudeDesktopUsed"];
+        this.CodexDesktopUsed = source["CodexDesktopUsed"];
     }
 }
 export class SettingsResponse {

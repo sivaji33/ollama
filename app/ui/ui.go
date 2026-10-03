@@ -33,6 +33,7 @@ import (
 	ollamaAuth "github.com/ollama/ollama/auth"
 	"github.com/ollama/ollama/cmd/launch"
 	"github.com/ollama/ollama/envconfig"
+	agenttools "github.com/ollama/ollama/internal/agent/tools"
 	internalcloud "github.com/ollama/ollama/internal/cloud"
 	"github.com/ollama/ollama/manifest"
 	"github.com/ollama/ollama/types/model"
@@ -286,6 +287,7 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("GET /api/v1/chats", handle(s.listChats))
 	mux.Handle("GET /api/v1/chat/{id}", handle(s.getChat))
 	mux.Handle("POST /api/v1/chat/{id}", handle(s.chat))
+	mux.Handle("POST /api/v1/chat/{id}/agent-message", handle(s.agentMessage))
 	mux.Handle("DELETE /api/v1/chat/{id}", handle(s.deleteChat))
 	mux.Handle("POST /api/v1/create-chat", handle(s.createChat))
 	mux.Handle("PUT /api/v1/chat/{id}/rename", handle(s.renameChat))
@@ -519,7 +521,87 @@ func (s *Server) createChat(w http.ResponseWriter, r *http.Request) error {
 		return fmt.Errorf("failed to generate chat ID: %w", err)
 	}
 
+	var request struct {
+		Prompt string `json:"prompt"`
+	}
+	if r.Body != nil && r.ContentLength != 0 {
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			return fmt.Errorf("decode new chat request: %w", err)
+		}
+	}
+	if request.Prompt != "" {
+		chat := store.NewChat(id.String())
+		chat.Messages = append(chat.Messages, store.NewMessage("user", request.Prompt, nil))
+		if err := s.Store.SetChat(*chat); err != nil {
+			return fmt.Errorf("save new agent chat: %w", err)
+		}
+	}
+
 	json.NewEncoder(w).Encode(map[string]string{"id": id.String()})
+	return nil
+}
+
+func (s *Server) agentMessage(w http.ResponseWriter, r *http.Request) error {
+	chatID := r.PathValue("id")
+	if chatID == "" {
+		return errors.New("chat ID is required")
+	}
+	var request struct {
+		Role             string                        `json:"role"`
+		Content          string                        `json:"content"`
+		AgentFileChanges []agenttools.FilesystemChange `json:"agent_file_changes,omitempty"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+		return fmt.Errorf("decode agent chat message: %w", err)
+	}
+
+	chat, err := s.Store.Chat(chatID)
+	if err != nil {
+		return fmt.Errorf("load agent chat %q: %w", chatID, err)
+	}
+
+	switch request.Role {
+	case "user", "assistant":
+		if strings.TrimSpace(request.Content) == "" {
+			return errors.New("agent chat message content is required")
+		}
+		message := store.NewMessage(request.Role, request.Content, nil)
+		if err := s.Store.AppendMessage(chatID, message); err != nil {
+			return fmt.Errorf("append %s agent chat message: %w", request.Role, err)
+		}
+	case "agent_file_changes":
+		if len(request.AgentFileChanges) == 0 {
+			return errors.New("agent file changes are required")
+		}
+		files := make([]agenttools.FilesystemChange, len(request.AgentFileChanges))
+		for i, change := range request.AgentFileChanges {
+			files[i] = change
+		}
+		diff := agenttools.RedactFilesystemDiff(agenttools.FilesystemDiff{Files: files})
+		result, err := json.Marshal(map[string]any{"files": diff.Files})
+		if err != nil {
+			return fmt.Errorf("marshal agent file changes: %w", err)
+		}
+		rawResult := json.RawMessage(result)
+		message := store.NewMessage("tool", "Agent file changes", &store.MessageOptions{ToolResult: &rawResult})
+		message.ToolName = "agent_file_changes"
+		if len(chat.Messages) > 0 {
+			last := chat.Messages[len(chat.Messages)-1]
+			if last.Role == "tool" && last.ToolName == "agent_file_changes" {
+				if err := s.Store.UpdateLastMessage(chatID, message); err != nil {
+					return fmt.Errorf("update live agent file changes: %w", err)
+				}
+				break
+			}
+		}
+		if err := s.Store.AppendMessage(chatID, message); err != nil {
+			return fmt.Errorf("append agent file changes: %w", err)
+		}
+	default:
+		return fmt.Errorf("unsupported agent chat message role %q", request.Role)
+	}
+
+	w.WriteHeader(http.StatusNoContent)
 	return nil
 }
 

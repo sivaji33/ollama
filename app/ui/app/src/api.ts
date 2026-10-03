@@ -294,6 +294,154 @@ export async function getModelCapabilities(
 
 export type ChatEventUnion = ChatEvent | DownloadEvent | ErrorEvent;
 
+export interface AgentFileChange {
+  path: string;
+  old_path?: string;
+  status: "created" | "modified" | "deleted" | "moved" | string;
+  unified_diff: string;
+  additions: number;
+  deletions: number;
+}
+
+interface AgentSessionEvent {
+  type: string;
+  filesystem_diff?: {
+    files: AgentFileChange[];
+  };
+}
+
+interface AgentSessionSnapshot {
+  id: string;
+  state: string;
+  final_summary?: string;
+}
+
+async function agentJSON<T>(
+  url: string,
+  init?: RequestInit,
+): Promise<T> {
+  const response = await fetch(`${API_BASE}${url}`, init);
+  const data = response.status === 204 ? undefined : await response.json();
+  if (!response.ok) {
+    throw new Error(data?.error || `Agent request failed: ${response.status}`);
+  }
+  return data as T;
+}
+
+async function postAgentChatMessage(
+  chatId: string,
+  body: {
+    role: "user" | "assistant" | "agent_file_changes";
+    content?: string;
+    agent_file_changes?: AgentFileChange[];
+  },
+): Promise<void> {
+  await agentJSON<void>(`/api/v1/chat/${encodeURIComponent(chatId)}/agent-message`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+}
+
+export async function* sendAgentMessage(
+  chatId: string,
+  message: string,
+  model: string,
+  workspace: string,
+  signal?: AbortSignal,
+): AsyncGenerator<ChatEventUnion> {
+  if (!workspace.trim()) {
+    yield new ErrorEvent({
+      eventName: "error",
+      error: "Agent mode requires a workspace directory configured in Settings.",
+    });
+    return;
+  }
+
+  let currentChatId = chatId;
+  if (chatId === "new") {
+    const created = await agentJSON<{ id: string }>("/api/v1/create-chat", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ prompt: message }),
+      signal,
+    });
+    currentChatId = created.id;
+    yield new ChatEvent({ eventName: "chat_created", chatId: currentChatId });
+  } else {
+    await postAgentChatMessage(currentChatId, { role: "user", content: message });
+  }
+
+  let sessionId = "";
+  try {
+    const session = await agentJSON<AgentSessionSnapshot>("/api/agent/session", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ model, workspace, task: message }),
+      signal,
+    });
+    sessionId = session.id;
+
+    let eventIndex = 0;
+    let snapshot = session;
+    while (!signal?.aborted) {
+      const events = await agentJSON<AgentSessionEvent[]>(
+        `/api/agent/session/${encodeURIComponent(sessionId)}/events`,
+        { signal },
+      );
+      for (const event of events.slice(eventIndex)) {
+        if (event.type !== "filesystem_change" || !event.filesystem_diff?.files.length) {
+          continue;
+        }
+        const files = event.filesystem_diff.files;
+        yield new ChatEvent({
+          eventName: "agent_file_change",
+          agentFileChanges: files,
+        });
+        await postAgentChatMessage(currentChatId, {
+          role: "agent_file_changes",
+          agent_file_changes: files,
+        });
+      }
+      eventIndex = events.length;
+
+      snapshot = await agentJSON<AgentSessionSnapshot>(
+        `/api/agent/session/${encodeURIComponent(sessionId)}`,
+        { signal },
+      );
+      if (["VERIFIED", "FAILED", "CANCELLED", "INTERRUPTED"].includes(snapshot.state)) {
+        break;
+      }
+      await new Promise<void>((resolve) => setTimeout(resolve, 200));
+    }
+
+    if (signal?.aborted) {
+      await agentJSON(`/api/agent/session/${encodeURIComponent(sessionId)}/cancel`, {
+        method: "POST",
+      });
+      return;
+    }
+
+    const summary =
+      snapshot.final_summary?.trim() ||
+      (snapshot.state === "VERIFIED" ? "Agent task completed." : "Agent task ended.");
+    await postAgentChatMessage(currentChatId, { role: "assistant", content: summary });
+    yield new ChatEvent({ eventName: "chat", content: summary });
+    yield new ChatEvent({ eventName: "done" });
+  } catch (error) {
+    if (signal?.aborted && sessionId) {
+      await agentJSON(`/api/agent/session/${encodeURIComponent(sessionId)}/cancel`, {
+        method: "POST",
+      });
+      return;
+    }
+    yield new ErrorEvent({
+      eventName: "error",
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
+}
+
 export async function* sendMessage(
   chatId: string,
   message: string,

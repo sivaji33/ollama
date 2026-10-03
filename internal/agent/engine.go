@@ -207,7 +207,8 @@ func (e *Engine) Run(ctx context.Context, request RunRequest) (RunResult, error)
 						if diffErr != nil {
 							return result, fmt.Errorf("collect live filesystem diff after %s: %w", call.Function.Name, diffErr)
 						}
-						fileEvent.FilesystemDiff = &liveDiff
+						safeDiff := agenttools.RedactFilesystemDiff(liveDiff)
+						fileEvent.FilesystemDiff = &safeDiff
 					}
 					if err := emitLifecycleEvent(&result, request, fileEvent); err != nil {
 						return result, fmt.Errorf("publish file-change progress: %w", err)

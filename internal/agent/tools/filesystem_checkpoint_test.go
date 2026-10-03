@@ -1,6 +1,7 @@
 package tools
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -148,6 +149,53 @@ func TestFilesystemCheckpointTracksEditedMove(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(root, "after.txt")); !os.IsNotExist(err) {
 		t.Fatalf("rollback left moved destination behind (err=%v)", err)
+	}
+}
+
+func TestRedactFilesystemDiffRemovesSecretsFromFileAndUnifiedContent(t *testing.T) {
+	diff := FilesystemDiff{
+		Files: []FilesystemChange{
+			{
+				Path:      ".env.local",
+				Status:    "modified",
+				Before:    "API_TOKEN=old-secret\nKEEP=visible\n",
+				After:     "API_TOKEN=new-secret\nKEEP=visible\n",
+				Unified:   "diff --git a/.env.local b/.env.local\n--- a/.env.local\n+++ b/.env.local\n-API_TOKEN=old-secret\n+API_TOKEN=new-secret\n KEEP=visible\n",
+				Additions: 1,
+				Deletions: 1,
+			},
+			{
+				Path:    "config.go",
+				Status:  "modified",
+				Before:  `password: "old-password"` + "\n",
+				After:   `password: "new-password"` + "\n",
+				Unified: "--- a/config.go\n+++ b/config.go\n-password: \"old-password\"\n+password: \"new-password\"\n",
+			},
+		},
+		Unified: "untrusted stale diff",
+	}
+
+	redacted := RedactFilesystemDiff(diff)
+	for _, secret := range []string{
+		"old-secret",
+		"new-secret",
+		"old-password",
+		"new-password",
+		"untrusted stale diff",
+	} {
+		encoded, err := json.Marshal(redacted)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if strings.Contains(string(encoded), secret) {
+			t.Errorf("redacted diff contains secret %q: %s", secret, encoded)
+		}
+	}
+	if !strings.Contains(redacted.Files[0].After, "KEEP=[REDACTED]") {
+		t.Fatal(".env values should be redacted")
+	}
+	if !strings.Contains(redacted.Files[1].Unified, "password: [REDACTED]") {
+		t.Fatalf("sensitive assignment was not redacted: %q", redacted.Files[1].Unified)
 	}
 }
 

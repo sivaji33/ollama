@@ -1,5 +1,11 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { getChats, getChat, sendMessage, type ChatEventUnion } from "../api";
+import {
+  getChats,
+  getChat,
+  sendAgentMessage,
+  sendMessage,
+  type ChatEventUnion,
+} from "../api";
 import { Chat, ErrorEvent, Model } from "@/gotypes";
 import { Message } from "@/gotypes";
 import { useSelectedModel } from "./useSelectedModel";
@@ -8,6 +14,7 @@ import { useRefetchModels } from "./useModels";
 import { useStreamingContext } from "@/contexts/StreamingContext";
 import { getModelCapabilities } from "@/api";
 import { useCloudStatus } from "./useCloudStatus";
+import { useSettings } from "./useSettings";
 
 export const useChats = () => {
   return useQuery({
@@ -198,6 +205,7 @@ export const useSendMessage = (chatId: string) => {
   let updatableChatId = chatId;
   const queryClient = useQueryClient();
   const { selectedModel } = useSelectedModel();
+  const { settingsData } = useSettings();
   const {
     setStreamingChatIds,
     loadingChats,
@@ -315,18 +323,28 @@ export const useSendMessage = (chatId: string) => {
         return newMap;
       });
 
-      const events = sendMessage(
-        chatId,
-        message,
-        effectiveModel,
-        attachments,
-        abortController.signal,
-        index,
-        webSearch,
-        fileTools,
-        forceUpdate,
-        think,
-      );
+      const events = settingsData?.Agent &&
+        !attachments?.length &&
+        !forceUpdate
+        ? sendAgentMessage(
+            chatId,
+            message,
+            effectiveModel.model,
+            settingsData.WorkingDir,
+            abortController.signal,
+          )
+        : sendMessage(
+            chatId,
+            message,
+            effectiveModel,
+            attachments,
+            abortController.signal,
+            index,
+            webSearch,
+            fileTools,
+            forceUpdate,
+            think,
+          );
       let currentChatId = chatId;
       let isCancelled = false;
 
@@ -583,6 +601,38 @@ export const useSendMessage = (chatId: string) => {
                     messages: newMessages,
                     browser_state: event.toolState ?? old.chat.browser_state,
                   }),
+                };
+              },
+            );
+            break;
+          }
+          case "agent_file_change": {
+            queryClient.setQueryData(
+              ["chat", currentChatId],
+              (old: { chat: Chat } | undefined) => {
+                if (!old) return old;
+                const messages = [...(old.chat.messages || [])];
+                const fileMessage = Object.assign(
+                  new Message({
+                    role: "tool",
+                    content: "Agent file changes",
+                  }),
+                  {
+                    tool_name: "agent_file_changes",
+                    tool_result: { files: event.agentFileChanges || [] },
+                  },
+                );
+                const last = messages[messages.length - 1] as
+                  | (Message & { tool_name?: string })
+                  | undefined;
+                if (last?.role === "tool" && last.tool_name === "agent_file_changes") {
+                  messages[messages.length - 1] = fileMessage;
+                } else {
+                  messages.push(fileMessage);
+                }
+                return {
+                  ...old,
+                  chat: new Chat({ ...old.chat, messages }),
                 };
               },
             );
