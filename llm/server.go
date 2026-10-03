@@ -6,6 +6,7 @@ import (
 	"errors"
 	"log/slog"
 	"os"
+	"runtime"
 	"slices"
 	"strings"
 	"time"
@@ -115,8 +116,56 @@ func NewLlamaServer(systemInfo ml.SystemInfo, gpus []ml.DeviceInfo, modelPath st
 		opts.NumCtx = int(trainCtx)
 	}
 
+	var systemMemoryHeadroom, cacheBytesPerToken uint64
+	if runtime.GOOS == "windows" && systemInfo.FreeMemory > 0 && (len(gpus) == 0 || allIntegratedGPUs(gpus)) {
+		ctx, reserve, budget, bytesPerToken, err := memorySafeContext(systemInfo, f.KV(), opts.NumCtx, numParallel, envconfig.KvCacheType())
+		if err != nil {
+			return nil, err
+		}
+		systemMemoryHeadroom = memoryHeadroomTarget(systemInfo.TotalMemory, systemInfo.FreeMemory)
+		cacheBytesPerToken = bytesPerToken
+		if ctx < opts.NumCtx {
+			slog.Warn("reducing model context to fit available system memory",
+				"requested_num_ctx", opts.NumCtx,
+				"num_ctx", ctx,
+				"parallel", numParallel,
+				"system_available_memory", systemInfo.FreeMemory,
+				"system_reserved_memory", reserve,
+				"kv_cache_budget", budget,
+				"kv_cache_bytes_per_token", bytesPerToken,
+			)
+			opts.NumCtx = ctx
+		} else {
+			slog.Info("model context fits available system memory",
+				"num_ctx", ctx,
+				"parallel", numParallel,
+				"system_available_memory", systemInfo.FreeMemory,
+				"system_reserved_memory", reserve,
+				"kv_cache_budget", budget,
+				"kv_cache_bytes_per_token", bytesPerToken,
+			)
+		}
+	}
+
 	kvct := strings.ToLower(envconfig.KvCacheType())
-	return NewLlamaServerRunner(gpus, modelPath, f, adapters, projectors, opts, numParallel, kvct, config)
+	runner, err := NewLlamaServerRunner(gpus, modelPath, f, adapters, projectors, opts, numParallel, kvct, config)
+	if err != nil {
+		return nil, err
+	}
+	if server, ok := runner.(*llamaServerRunner); ok {
+		server.systemMemoryHeadroom = systemMemoryHeadroom
+		server.kvCacheBytesPerToken = cacheBytesPerToken
+	}
+	return runner, nil
+}
+
+func allIntegratedGPUs(gpus []ml.DeviceInfo) bool {
+	for _, gpu := range gpus {
+		if !gpu.Integrated {
+			return false
+		}
+	}
+	return true
 }
 
 // Server status types
