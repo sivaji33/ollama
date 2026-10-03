@@ -205,6 +205,33 @@ func TestRunRejectsAgentSuccessWithoutChange(t *testing.T) {
 	}
 }
 
+func TestRunRejectsGitMetadataMutation(t *testing.T) {
+	dir := initRepo(t)
+	cfg := baseConfig(dir)
+	runner := &fakeRunner{onRun: func(workspace string) {
+		path := filepath.Join(workspace, ".git", "HEAD")
+		if err := os.WriteFile(path, []byte("ref: refs/heads/other\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}}
+
+	result, err := Run(context.Background(), cfg, runner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Reverted != 1 {
+		t.Fatalf("reverted = %d, want 1 (cycles: %+v)", result.Reverted, result.Cycles)
+	}
+	if reason := result.Cycles[0].Reason; !strings.Contains(reason, "version-control internals") {
+		t.Fatalf("reason = %q, want git-metadata rejection", reason)
+	}
+	if got, err := os.ReadFile(filepath.Join(dir, ".git", "HEAD")); err != nil {
+		t.Fatal(err)
+	} else if !strings.HasPrefix(string(got), "ref: refs/heads/master") && !strings.HasPrefix(string(got), "ref: refs/heads/main") {
+		t.Fatalf("HEAD = %q, want the repository HEAD restored after revert", got)
+	}
+}
+
 func TestRunRefusesDirtyTreeWithoutAllowDirty(t *testing.T) {
 	dir := initRepo(t)
 	writeFile(t, dir, "main.go", "package main\n\n// uncommitted work\n")

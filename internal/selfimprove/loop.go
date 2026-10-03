@@ -19,6 +19,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
 	"path/filepath"
 	"strings"
 	"time"
@@ -288,6 +289,14 @@ func (l *loop) runCycle(ctx context.Context, index int, topic string, deadline t
 	if err != nil {
 		return l.skip(record, started, err.Error())
 	}
+	gitStateBefore, err := l.git.GitMetadataHash(ctx)
+	if err != nil {
+		return l.skip(record, started, "snapshot git metadata: "+err.Error())
+	}
+	gitMetadataBefore, err := l.git.SnapshotMetadata()
+	if err != nil {
+		return l.skip(record, started, "snapshot git metadata: "+err.Error())
+	}
 	l.cfg.Logf("cycle %d: checkpoint %s", index, shortSHA(checkpoint))
 	l.cfg.Logf("cycle %d: topic: %s", index, topic)
 
@@ -312,15 +321,15 @@ func (l *loop) runCycle(ctx context.Context, index int, topic string, deadline t
 			return l.skip(record, started, "research only; no change applied")
 		}
 		record.Reason = "research cycle changed files; reverted"
-		if err := l.git.RevertTo(ctx, checkpoint, preserve); err != nil {
+		if err := l.revertToCheckpoint(ctx, checkpoint, preserve, gitMetadataBefore); err != nil {
 			record.Reason += "; revert failed: " + err.Error()
 		}
 		return l.revert(record, started)
 	}
 
-	if reason := l.reject(cycleCtx, checkpoint, run, runErr); reason != "" {
+	if reason := l.reject(cycleCtx, checkpoint, gitStateBefore, run, runErr); reason != "" {
 		record.Reason = reason
-		if err := l.git.RevertTo(ctx, checkpoint, preserve); err != nil {
+		if err := l.revertToCheckpoint(ctx, checkpoint, preserve, gitMetadataBefore); err != nil {
 			record.Reason += "; revert failed: " + err.Error()
 		}
 		l.cfg.Logf("cycle %d: reverted - %s", index, reason)
@@ -330,7 +339,7 @@ func (l *loop) runCycle(ctx context.Context, index int, topic string, deadline t
 	changed, err := l.git.ChangedFiles(ctx, checkpoint)
 	if err != nil {
 		record.Reason = "inspect changed files: " + err.Error()
-		_ = l.git.RevertTo(ctx, checkpoint, preserve)
+		_ = l.revertToCheckpoint(ctx, checkpoint, preserve, gitMetadataBefore)
 		return l.revert(record, started)
 	}
 	record.Changed = changed
@@ -338,7 +347,7 @@ func (l *loop) runCycle(ctx context.Context, index int, topic string, deadline t
 	kept, err := l.git.Commit(ctx, fmt.Sprintf("ownbot self-improve cycle %d: %s", index, oneLine(record.Summary)))
 	if err != nil {
 		record.Reason = "keep commit failed: " + err.Error()
-		_ = l.git.RevertTo(ctx, checkpoint, preserve)
+		_ = l.revertToCheckpoint(ctx, checkpoint, preserve, gitMetadataBefore)
 		return l.revert(record, started)
 	}
 	record.HeadAfter = kept
@@ -346,6 +355,19 @@ func (l *loop) runCycle(ctx context.Context, index int, topic string, deadline t
 	record.DurationMS = l.now().Sub(started).Milliseconds()
 	l.cfg.Logf("cycle %d: kept as %s - %s", index, shortSHA(kept), oneLine(record.Summary))
 	return record
+}
+
+func (l *loop) revertToCheckpoint(ctx context.Context, checkpoint string, preserve []string, gitMetadataBefore string) error {
+	if err := l.git.RestoreMetadata(gitMetadataBefore); err != nil {
+		return err
+	}
+	if err := l.git.RevertTo(ctx, checkpoint, preserve); err != nil {
+		return err
+	}
+	if strings.TrimSpace(gitMetadataBefore) != "" {
+		_ = os.RemoveAll(gitMetadataBefore)
+	}
+	return nil
 }
 
 func (l *loop) skip(record CycleRecord, started time.Time, reason string) CycleRecord {
@@ -364,12 +386,18 @@ func (l *loop) revert(record CycleRecord, started time.Time) CycleRecord {
 // reject returns the reason a cycle must not be kept, or "" when the change is
 // safe to keep. The model's own success claim is never sufficient: every gate
 // here is evaluated by the loop itself.
-func (l *loop) reject(ctx context.Context, checkpoint string, run agent.RunResult, runErr error) string {
+func (l *loop) reject(ctx context.Context, checkpoint, gitStateBefore string, run agent.RunResult, runErr error) string {
 	if runErr != nil {
 		return "agent run failed: " + runErr.Error()
 	}
 	if run.Status != agent.StatusSuccess {
 		return "agent did not complete: " + oneLine(run.FinalSummary)
+	}
+
+	if gitStateAfter, err := l.git.GitMetadataHash(ctx); err != nil {
+		return "inspect git metadata: " + err.Error()
+	} else if gitStateBefore != "" && gitStateAfter != gitStateBefore {
+		return "cycle modified version-control internals: .git metadata changed"
 	}
 
 	changed, err := l.git.ChangedFiles(ctx, checkpoint)

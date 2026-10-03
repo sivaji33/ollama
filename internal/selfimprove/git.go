@@ -3,8 +3,11 @@ package selfimprove
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -129,6 +132,112 @@ func (g *Git) ChangedFiles(ctx context.Context, since string) ([]string, error) 
 	}
 	changed = append(changed, untracked...)
 	return dedupe(changed), nil
+}
+
+// GitMetadataHash snapshots the repository metadata directory so a cycle cannot
+// quietly mutate .git and still look clean from git status alone. The snapshot
+// is taken immediately after the checkpoint commit and compared again before a
+// change is kept.
+func (g *Git) GitMetadataHash(_ context.Context) (string, error) {
+	gitDir := filepath.Join(g.dir, ".git")
+	info, err := os.Stat(gitDir)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return "", nil
+		}
+		return "", err
+	}
+	if !info.IsDir() {
+		return fmt.Sprintf("%s:%d", filepath.ToSlash(info.Name()), info.ModTime().UnixNano()), nil
+	}
+
+	hash := sha256.New()
+	if err := filepath.WalkDir(gitDir, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() {
+			return nil
+		}
+		rel, err := filepath.Rel(gitDir, path)
+		if err != nil {
+			return err
+		}
+		if rel == "." || rel == "" {
+			return nil
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		_, _ = fmt.Fprintf(hash, "%s %x\n", filepath.ToSlash(rel), sha256.Sum256(data))
+		return nil
+	}); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(hash.Sum(nil)), nil
+}
+
+func (g *Git) SnapshotMetadata() (string, error) {
+	gitDir := filepath.Join(g.dir, ".git")
+	if _, err := os.Stat(gitDir); err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return "", nil
+		}
+		return "", err
+	}
+	root, err := os.MkdirTemp("", "selfimprove-git-*")
+	if err != nil {
+		return "", err
+	}
+	backupDir := filepath.Join(root, ".git")
+	if err := copyDir(gitDir, backupDir); err != nil {
+		_ = os.RemoveAll(root)
+		return "", err
+	}
+	return root, nil
+}
+
+func (g *Git) RestoreMetadata(snapshotRoot string) error {
+	if strings.TrimSpace(snapshotRoot) == "" {
+		return nil
+	}
+	gitDir := filepath.Join(g.dir, ".git")
+	if err := os.RemoveAll(gitDir); err != nil {
+		return fmt.Errorf("restore git metadata: %w", err)
+	}
+	backupDir := filepath.Join(snapshotRoot, ".git")
+	if err := copyDir(backupDir, gitDir); err != nil {
+		return fmt.Errorf("restore git metadata: %w", err)
+	}
+	return nil
+}
+
+func copyDir(src, dst string) error {
+	if err := os.MkdirAll(dst, 0o755); err != nil {
+		return err
+	}
+	return filepath.WalkDir(src, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if path == src {
+			return nil
+		}
+		rel, err := filepath.Rel(src, path)
+		if err != nil {
+			return err
+		}
+		target := filepath.Join(dst, rel)
+		if d.IsDir() {
+			return os.MkdirAll(target, 0o755)
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		return os.WriteFile(target, data, 0o600)
+	})
 }
 
 // RevertTo restores the tree to sha and removes the files the reverted cycle
