@@ -96,3 +96,34 @@ func TestAgentRunHandlerRejectsMissingFields(t *testing.T) {
 		t.Fatalf("status %d: %s", w.Code, w.Body.String())
 	}
 }
+
+func TestAgentContextStatusHandlerReturnsDiagnostics(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	s := &Server{}
+	req := httptest.NewRequest(http.MethodGet, "/api/agent/context", nil)
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = req
+	s.AgentContextStatusHandler(c)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status %d: %s", w.Code, w.Body.String())
+	}
+	var status map[string]any
+	if err := json.Unmarshal(w.Body.Bytes(), &status); err != nil {
+		t.Fatal(err)
+	}
+	for _, key := range []string{
+		"total_ram_gb",
+		"available_ram_gb",
+		"ram_reserve_gb",
+		"selected_context_tokens",
+		"max_context_tokens",
+		"estimated_prompt_tokens",
+		"reserved_output_tokens",
+		"context_safe",
+	} {
+		if _, ok := status[key]; !ok {
+			t.Errorf("diagnostic is missing %q: %v", key, status)
+		}
+	}
+}

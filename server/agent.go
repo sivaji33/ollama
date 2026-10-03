@@ -42,6 +42,15 @@ func (s *Server) AgentRunHandler(c *gin.Context) {
 	c.JSON(http.StatusOK, result)
 }
 
+func (s *Server) AgentContextStatusHandler(c *gin.Context) {
+	status, err := agentpkg.CurrentContextStatus()
+	if err != nil {
+		c.AbortWithStatusJSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, status)
+}
+
 // serverChatClient deliberately routes agent turns through the existing chat
 // handler so scheduling, templates, and tool-call parsing remain single-source.
 type serverChatClient struct{ server *Server }

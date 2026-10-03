@@ -22,9 +22,11 @@ const (
 	// agentStagnantTurnsEnv caps consecutive turns without new observations
 	// or meaningful source changes. Defaults to 4; 0 disables the guard.
 	agentStagnantTurnsEnv = "OLLAMA_AGENT_STAGNANT_TURNS"
-	// agentContextWindowEnv sets num_ctx for agent chat requests. Unset
-	// defaults to 12k; 0 lets the model/server default apply.
+	// agentContextWindowEnv is a legacy optional upper bound for agent context.
 	agentContextWindowEnv = "OLLAMA_AGENT_CONTEXT_WINDOW"
+	agentMaxContextEnv    = "OWNBOT_MAX_CONTEXT_TOKENS"
+	agentMinContextEnv    = "OWNBOT_MIN_CONTEXT_TOKENS"
+	agentRAMReserveEnv    = "OWNBOT_RAM_RESERVE_GB"
 	// agentConversationMessagesEnv caps messages replayed to the model.
 	// Unset/0 replays the full conversation.
 	agentConversationMessagesEnv = "OLLAMA_AGENT_CONVERSATION_MESSAGES"
@@ -40,9 +42,11 @@ const (
 	agentOutputLimitEnv = "OLLAMA_AGENT_OUTPUT_LIMIT"
 )
 
-// defaultAgentContextWindow keeps the historical 12k agent window when the
-// operator has not chosen one.
-const defaultAgentContextWindow = 12 * 1024
+const (
+	defaultAgentMaxContextTokens = 32768
+	defaultAgentMinContextTokens = 4096
+	defaultAgentRAMReserveGB     = 4
+)
 
 // defaultAgentStagnantTurns stops an agent that is clearly looping.
 const defaultAgentStagnantTurns = 4
@@ -70,7 +74,19 @@ func agentStagnationLimit() int {
 }
 
 func agentContextWindowLimit() int {
-	return agentPositiveEnv(agentContextWindowEnv, defaultAgentContextWindow)
+	return agentPositiveEnv(agentContextWindowEnv, 0)
+}
+
+func agentMaxContextTokens() int {
+	return agentPositiveEnv(agentMaxContextEnv, defaultAgentMaxContextTokens)
+}
+
+func agentMinContextTokens() int {
+	return agentPositiveEnv(agentMinContextEnv, defaultAgentMinContextTokens)
+}
+
+func agentRAMReserveGB() int {
+	return agentPositiveEnv(agentRAMReserveEnv, defaultAgentRAMReserveGB)
 }
 
 func agentConversationLimit() int {

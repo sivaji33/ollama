@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strconv"
 	"strings"
 	"time"
@@ -522,16 +523,53 @@ func newLifecycleEvent(
 }
 
 func (e *Engine) chatOnce(ctx context.Context, model string, messages []api.Message, filesystemOnly bool) (api.ChatResponse, error) {
+	status, err := CurrentContextStatus()
+	if err != nil {
+		return api.ChatResponse{}, err
+	}
+	return e.chatOnceWithContextStatus(ctx, model, messages, filesystemOnly, status)
+}
+
+func (e *Engine) chatOnceWithContextStatus(ctx context.Context, model string, messages []api.Message, filesystemOnly bool, status ContextStatus) (api.ChatResponse, error) {
 	stream := false
-	truncate := true
-	options := map[string]any{}
-	if window := agentContextWindowLimit(); window > 0 {
-		options["num_ctx"] = window
+	truncate := false
+	tools := agentTools(filesystemOnly)
+	selected := status.SelectedContextTokens
+	candidates := append([]int{selected}, lowerContextCandidates(selected, agentMinContextTokens())...)
+	for attempt, contextLimit := range candidates {
+		preparedMessages, estimatedTokens, err := prepareAgentPrompt(messages, tools, contextLimit)
+		if err != nil {
+			attemptStatus := status
+			attemptStatus.SelectedContextTokens = contextLimit
+			logContextStatus(attemptStatus, estimatedTokens)
+			slog.Info("[context] prompt remains over budget; request not sent", "context_limit", contextLimit)
+			return api.ChatResponse{}, err
+		}
+		attemptStatus := status
+		attemptStatus.SelectedContextTokens = contextLimit
+		logContextStatus(attemptStatus, estimatedTokens)
+
+		req := &api.ChatRequest{
+			Model: model, Messages: preparedMessages, Tools: tools, Stream: &stream,
+			Options: map[string]any{
+				"num_ctx":     contextLimit,
+				"num_predict": outputTokenReserve(contextLimit),
+			},
+			Truncate: &truncate,
+		}
+		response, err := e.chatOnceWithRequest(ctx, req)
+		if err == nil {
+			return response, nil
+		}
+		if !isContextSizeError(err) || attempt == len(candidates)-1 {
+			return api.ChatResponse{}, err
+		}
+		slog.Info(fmt.Sprintf("[context] Ollama context-size error at %d tokens; trying lower context", contextLimit))
 	}
-	req := &api.ChatRequest{
-		Model: model, Messages: messages, Tools: agentTools(filesystemOnly), Stream: &stream,
-		Options: options, Truncate: &truncate,
-	}
+	return api.ChatResponse{}, errors.New("agent context retry exhausted")
+}
+
+func (e *Engine) chatOnceWithRequest(ctx context.Context, req *api.ChatRequest) (api.ChatResponse, error) {
 	var aggregate api.ChatResponse
 	err := e.chat.Chat(ctx, req, func(part api.ChatResponse) error {
 		content := aggregate.Message.Content
@@ -547,7 +585,10 @@ func (e *Engine) chatOnce(ctx context.Context, model string, messages []api.Mess
 		}
 		return nil
 	})
-	return aggregate, err
+	if err != nil {
+		return api.ChatResponse{}, err
+	}
+	return aggregate, nil
 }
 
 func stringArg(args *api.ToolCallFunctionArguments, name string) (string, error) {

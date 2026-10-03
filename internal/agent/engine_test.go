@@ -219,6 +219,8 @@ func TestEngineStopsAfterFourUnproductiveToolFreeTurns(t *testing.T) {
 }
 
 func TestAgentFirstRequestRequiresNativeToolUse(t *testing.T) {
+	t.Setenv(agentMaxContextEnv, "8192")
+	t.Setenv(agentMinContextEnv, "8192")
 	root := initRepo(t)
 	pseudoCall := `{"name":"apply_patch","arguments":{"path":"main.go"}}`
 	chat := &scriptedChat{responses: []api.ChatResponse{
@@ -238,11 +240,11 @@ func TestAgentFirstRequestRequiresNativeToolUse(t *testing.T) {
 	if req.Stream == nil || *req.Stream {
 		t.Fatal("agent model request must disable streaming")
 	}
-	if want := agentContextWindowLimit(); req.Options["num_ctx"] != want {
+	if want := 8192; req.Options["num_ctx"] != want {
 		t.Fatalf("agent num_ctx = %v, want %d", req.Options["num_ctx"], want)
 	}
-	if req.Truncate == nil || !*req.Truncate {
-		t.Fatal("agent request must enable bounded server-side truncation")
+	if req.Truncate == nil || *req.Truncate {
+		t.Fatal("agent request must disable server-side truncation after prompt budgeting")
 	}
 	wantNames := []string{"search_files", "list_files", "read_file", "write_file", "apply_patch", "multi_edit", "delete_file", "move_file", "shell", "git_diff", "web_search", "web_fetch"}
 	if len(req.Tools) != len(wantNames) {

@@ -17,6 +17,9 @@ func resetAgentLimitEnv(t *testing.T) {
 		agentToolCallsPerTurnEnv,
 		agentStagnantTurnsEnv,
 		agentContextWindowEnv,
+		agentMaxContextEnv,
+		agentMinContextEnv,
+		agentRAMReserveEnv,
 		agentConversationMessagesEnv,
 		agentObservationBytesEnv,
 		agentCommandTimeoutEnv,
@@ -50,8 +53,17 @@ func TestAgentLimitsDefaultToUnrestrictedOperations(t *testing.T) {
 	if got := agentStagnationLimit(); got != defaultAgentStagnantTurns {
 		t.Fatalf("agentStagnationLimit() = %d, want %d", got, defaultAgentStagnantTurns)
 	}
-	if got := agentContextWindowLimit(); got != defaultAgentContextWindow {
-		t.Fatalf("agentContextWindowLimit() = %d, want %d", got, defaultAgentContextWindow)
+	if got := agentContextWindowLimit(); got != 0 {
+		t.Fatalf("agentContextWindowLimit() = %d, want no legacy override", got)
+	}
+	if got := agentMaxContextTokens(); got != defaultAgentMaxContextTokens {
+		t.Fatalf("agentMaxContextTokens() = %d, want %d", got, defaultAgentMaxContextTokens)
+	}
+	if got := agentMinContextTokens(); got != defaultAgentMinContextTokens {
+		t.Fatalf("agentMinContextTokens() = %d, want %d", got, defaultAgentMinContextTokens)
+	}
+	if got := agentRAMReserveGB(); got != defaultAgentRAMReserveGB {
+		t.Fatalf("agentRAMReserveGB() = %d, want %d", got, defaultAgentRAMReserveGB)
 	}
 }
 
@@ -61,6 +73,9 @@ func TestAgentLimitsReadOperatorEnvironment(t *testing.T) {
 	t.Setenv(agentToolCallsPerTurnEnv, "3")
 	t.Setenv(agentStagnantTurnsEnv, "9")
 	t.Setenv(agentContextWindowEnv, "32768")
+	t.Setenv(agentMaxContextEnv, "16384")
+	t.Setenv(agentMinContextEnv, "8192")
+	t.Setenv(agentRAMReserveEnv, "3")
 	t.Setenv(agentConversationMessagesEnv, "40")
 	t.Setenv(agentObservationBytesEnv, "8192")
 	t.Setenv(agentCommandTimeoutEnv, "600")
@@ -77,6 +92,15 @@ func TestAgentLimitsReadOperatorEnvironment(t *testing.T) {
 	}
 	if got := agentContextWindowLimit(); got != 32768 {
 		t.Fatalf("agentContextWindowLimit() = %d, want 32768", got)
+	}
+	if got := agentMaxContextTokens(); got != 16384 {
+		t.Fatalf("agentMaxContextTokens() = %d, want 16384", got)
+	}
+	if got := agentMinContextTokens(); got != 8192 {
+		t.Fatalf("agentMinContextTokens() = %d, want 8192", got)
+	}
+	if got := agentRAMReserveGB(); got != 3 {
+		t.Fatalf("agentRAMReserveGB() = %d, want 3", got)
 	}
 	if got := agentConversationLimit(); got != 40 {
 		t.Fatalf("agentConversationLimit() = %d, want 40", got)

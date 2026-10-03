@@ -1919,6 +1919,7 @@ func (s *Server) GenerateRoutes() (http.Handler, error) {
 	r.POST("/api/generate", s.withInferenceRequestLogging("/api/generate", s.GenerateHandler)...)
 	r.POST("/api/chat", s.withInferenceRequestLogging("/api/chat", s.ChatHandler)...)
 	r.POST("/api/agent/run", s.AgentRunHandler)
+	r.GET("/api/agent/context", s.AgentContextStatusHandler)
 	r.POST("/api/agent/session", s.AgentSessionCreateHandler)
 	r.POST("/api/agent/session/:id/continue", s.AgentSessionContinueHandler)
 	r.POST("/api/agent/session/:id/cancel", s.AgentSessionCancelHandler)

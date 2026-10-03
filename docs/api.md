@@ -1871,3 +1871,22 @@ curl http://localhost:11434/api/version
   "version": "0.5.1"
 }
 ```
+
+## OwnBot agent context diagnostics
+
+OwnBot agent requests choose `num_ctx` from currently available system RAM after
+reserving memory for Windows and OwnBot. The defaults are a 4 GB RAM reserve, a
+4096-token minimum, and a 32768-token maximum. Set `OWNBOT_RAM_RESERVE_GB`,
+`OWNBOT_MIN_CONTEXT_TOKENS`, or `OWNBOT_MAX_CONTEXT_TOKENS` to adjust these
+limits. Context above 32768 tokens is not selected automatically.
+
+Before each agent model request, OwnBot estimates the prompt size, reserves
+2048 tokens for output (1024 for a 4096-token context), compacts old history
+when needed, and refuses to send a prompt that still does not fit. On an Ollama
+context-size error, the agent makes at most one retry at each lower context
+size that can fit the prompt.
+
+`GET /api/agent/context` reports total and available RAM, the configured reserve,
+the selected and maximum context sizes, and the output-token reserve. Prompt
+size is reported as zero there because the endpoint does not inspect an active
+agent request.
