@@ -154,6 +154,9 @@ type llamaServerRunner struct {
 	// used to map DeviceIDs to device names for VRAMByGPU lookups.
 	gpus []ml.DeviceInfo
 
+	systemMemoryHeadroom uint64
+	kvCacheBytesPerToken uint64
+
 	ggml          *ggml.GGML
 	totalLayers   uint64 // maximum offloadable model layers
 	loadStart     time.Time
@@ -1057,17 +1060,31 @@ func qwenVLServerArgs(modelArch string) []string {
 func (s *llamaServerRunner) Load(ctx context.Context, systemInfo ml.SystemInfo, gpus []ml.DeviceInfo, _ bool) ([]ml.DeviceID, error) {
 	slog.Info("loading model via llama-server", "model", s.modelPath)
 
-	if err := s.WaitUntilRunning(ctx); err != nil {
-		retried, retryErr := s.retryWithMMProjCPUOffload(err)
+	for {
+		if err := s.WaitUntilRunning(ctx); err != nil {
+			retried, retryErr := s.retryWithMMProjCPUOffload(err)
+			if retryErr != nil {
+				return nil, retryErr
+			}
+			if !retried {
+				retried, retryErr = s.retryWithSmallerContext(err, systemInfo)
+				if retryErr != nil {
+					return nil, retryErr
+				}
+			}
+			if !retried {
+				return nil, err
+			}
+			continue
+		}
+		retried, retryErr := s.retryForSystemMemoryHeadroom()
 		if retryErr != nil {
 			return nil, retryErr
 		}
-		if !retried {
-			return nil, err
+		if retried {
+			continue
 		}
-		if err := s.WaitUntilRunning(ctx); err != nil {
-			return nil, fmt.Errorf("llama-server startup failed after projector CPU offload retry: %w", err)
-		}
+		break
 	}
 
 	// Verify that buffer size parsing captured GPU allocations.
@@ -1091,6 +1108,101 @@ func (s *llamaServerRunner) Load(ctx context.Context, systemInfo ml.SystemInfo, 
 	}
 
 	return deviceIDs, nil
+}
+
+func (s *llamaServerRunner) retryWithSmallerContext(loadErr error, systemInfo ml.SystemInfo) (bool, error) {
+	if loadErr == nil || !IsOutOfMemory(loadErr) || s.launch.opts.NumCtx <= int(llamaContextAlignment) {
+		return false, nil
+	}
+
+	nextContext := s.launch.opts.NumCtx / 2
+	nextContext = nextContext / int(llamaContextAlignment) * int(llamaContextAlignment)
+	if nextContext == 0 {
+		nextContext = int(llamaContextAlignment)
+	}
+	slog.Warn("llama-server ran out of memory; retrying with a smaller context",
+		"model", s.modelPath,
+		"previous_num_ctx", s.launch.opts.NumCtx,
+		"num_ctx", nextContext,
+		"parallel", s.launch.numParallel,
+		"system_available_memory", systemInfo.FreeMemory,
+	)
+	return true, s.restartWithContext(loadErr, nextContext)
+}
+
+func (s *llamaServerRunner) retryForSystemMemoryHeadroom() (bool, error) {
+	if s.systemMemoryHeadroom == 0 || s.kvCacheBytesPerToken == 0 {
+		return false, nil
+	}
+
+	currentFree, err := currentFreePhysicalMemory()
+	if err != nil {
+		stopErr := s.stopProcess()
+		if stopErr != nil {
+			return false, fmt.Errorf("could not verify Windows memory headroom after llama-server startup: %w; failed to stop llama-server: %v", err, stopErr)
+		}
+		return false, fmt.Errorf("could not verify Windows memory headroom after llama-server startup: %w", err)
+	}
+	if s.launch.opts.NumCtx <= int(llamaContextAlignment) {
+		if minimumContextFitsHeadroom(currentFree, s.systemMemoryHeadroom, s.kvCacheBytesPerToken, s.launch.numParallel) {
+			slog.Warn("minimum llama-server context allocation is within its measured Windows/OwnBot memory headroom",
+				"available_memory", currentFree,
+				"system_memory_headroom", s.systemMemoryHeadroom,
+				"minimum_context", s.launch.opts.NumCtx,
+			)
+		} else {
+			slog.Warn("minimum llama-server context reached before the planned Windows/OwnBot headroom; retaining the successfully loaded runner",
+				"available_memory", currentFree,
+				"system_memory_headroom", s.systemMemoryHeadroom,
+				"minimum_context", s.launch.opts.NumCtx,
+			)
+		}
+		return false, nil
+	}
+	nextContext, fits := contextForMemoryHeadroom(
+		s.launch.opts.NumCtx,
+		currentFree,
+		s.systemMemoryHeadroom,
+		s.kvCacheBytesPerToken,
+		s.launch.numParallel,
+	)
+	if fits {
+		return false, nil
+	}
+	if nextContext <= 0 && s.launch.opts.NumCtx > int(llamaContextAlignment) {
+		nextContext = int(llamaContextAlignment)
+	}
+	if nextContext <= 0 || nextContext >= s.launch.opts.NumCtx {
+		stopErr := s.stopProcess()
+		err := fmt.Errorf("llama-server needs more memory than is available while preserving Windows/OwnBot headroom (available=%d reserved=%d)", currentFree, s.systemMemoryHeadroom)
+		if stopErr != nil {
+			return false, fmt.Errorf("%w; failed to stop llama-server: %v", err, stopErr)
+		}
+		return false, err
+	}
+
+	slog.Warn("llama-server startup reduced available system memory below the Windows/OwnBot reserve; recalculating context",
+		"model", s.modelPath,
+		"previous_num_ctx", s.launch.opts.NumCtx,
+		"num_ctx", nextContext,
+		"system_available_memory", currentFree,
+		"system_memory_headroom", s.systemMemoryHeadroom,
+		"kv_cache_bytes_per_token", s.kvCacheBytesPerToken,
+	)
+	return true, s.restartWithContext(fmt.Errorf("system memory headroom fell below its measured reserve"), nextContext)
+}
+
+func (s *llamaServerRunner) restartWithContext(reason error, nextContext int) error {
+	if err := s.stopProcess(); err != nil {
+		return fmt.Errorf("llama-server startup failed before smaller-context retry: %w; error stopping failed process: %v", reason, err)
+	}
+	s.launch.opts.NumCtx = nextContext
+	s.options.NumCtx = nextContext
+	s.resetLoadAccounting()
+	if err := s.startProcess(); err != nil {
+		return fmt.Errorf("llama-server startup failed before smaller-context retry: %w; error starting retry: %v", reason, err)
+	}
+	return nil
 }
 
 func (s *llamaServerRunner) retryWithMMProjCPUOffload(loadErr error) (bool, error) {
