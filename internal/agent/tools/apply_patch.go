@@ -43,6 +43,9 @@ func (w *Workspace) ApplyPatch(path, oldText, newText string) (string, error) {
 		}
 		mode = info.Mode().Perm()
 	}
+	if err := w.beforeMutation(resolved); err != nil {
+		return "", err
+	}
 	if err := os.MkdirAll(filepath.Dir(resolved), 0o755); err != nil {
 		return "", err
 	}
@@ -65,6 +68,13 @@ func (w *Workspace) ApplyPatch(path, oldText, newText string) (string, error) {
 	}
 	if err := os.Rename(tmpName, resolved); err != nil {
 		return "", err
+	}
+	written, err := os.ReadFile(resolved)
+	if err != nil {
+		return "", fmt.Errorf("verify patched file %q: %w", path, err)
+	}
+	if string(written) != updated {
+		return "", fmt.Errorf("verify patched file %q: on-disk content does not match patch", path)
 	}
 	if creating {
 		return fmt.Sprintf("created %s", path), nil

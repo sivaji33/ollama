@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os/exec"
 	"path/filepath"
 	"sort"
@@ -123,6 +124,69 @@ func (b *RepositoryContextBuilder) Build(
 	result.DocFiles = findDocFiles(allFiles, b.options.MaxDocFiles)
 	result.TopDirs = findTopDirs(allFiles, b.options.MaxTopDirs)
 
+	return result, nil
+}
+
+func (b *RepositoryContextBuilder) BuildFilesystem(
+	ctx context.Context,
+	workspace string,
+	task string,
+) (RepositoryContext, error) {
+	var result RepositoryContext
+	if b == nil {
+		return result, errors.New("repository context builder is nil")
+	}
+	workspace = strings.TrimSpace(workspace)
+	if workspace == "" {
+		return result, errors.New("workspace is required")
+	}
+	abs, err := filepath.Abs(workspace)
+	if err != nil {
+		return result, fmt.Errorf("resolve workspace: %w", err)
+	}
+	result.Workspace = abs
+
+	var files []string
+	err = filepath.WalkDir(abs, func(path string, entry fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if entry.IsDir() && path != abs {
+			name := strings.ToLower(entry.Name())
+			switch name {
+			case ".git", "build", "node_modules", ".cache", "dist":
+				return fs.SkipDir
+			}
+			return nil
+		}
+		info, err := entry.Info()
+		if err != nil {
+			return err
+		}
+		if !info.Mode().IsRegular() {
+			return nil
+		}
+		rel, err := filepath.Rel(abs, path)
+		if err != nil {
+			return err
+		}
+		files = append(files, filepath.ToSlash(rel))
+		return nil
+	})
+	if err != nil {
+		return result, fmt.Errorf("inspect live workspace: %w", err)
+	}
+	sort.Strings(files)
+	result.TrackedFiles = bounded(files, b.options.MaxTrackedFiles)
+	result.Manifests = findManifests(files)
+	result.Languages = findLanguages(files)
+	result.RelevantFiles = findRelevant(files, task, b.options.MaxRelevantFiles)
+	result.TestFiles = findTestFiles(files, b.options.MaxTestFiles)
+	result.DocFiles = findDocFiles(files, b.options.MaxDocFiles)
+	result.TopDirs = findTopDirs(files, b.options.MaxTopDirs)
 	return result, nil
 }
 

@@ -42,6 +42,9 @@ func (w *Workspace) ListFiles(pattern string, limit int) (string, error) {
 		if resolveErr != nil {
 			continue
 		}
+		if err := w.validateRestrictedPath(resolved, match); err != nil {
+			continue
+		}
 		info, statErr := os.Stat(resolved)
 		if statErr != nil || !info.Mode().IsRegular() {
 			continue

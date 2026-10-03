@@ -42,20 +42,30 @@ func (e *Engine) Run(ctx context.Context, request RunRequest) (RunResult, error)
 		result.FinalSummary = "session cancelled"
 		return result, err
 	}
-	workspace, err := agenttools.NewWorkspace(request.Workspace)
+	var workspace *agenttools.Workspace
+	var err error
+	if request.FilesystemCheckpoint != nil {
+		workspace, err = agenttools.NewRestrictedWorkspace(request.Workspace)
+	} else {
+		workspace, err = agenttools.NewWorkspace(request.Workspace)
+	}
 	if err != nil {
 		return result, err
+	}
+	if request.FilesystemCheckpoint != nil {
+		workspace.SetBeforeMutation(request.FilesystemCheckpoint.BeforeMutation)
+		workspace.SetBeforeMove(request.FilesystemCheckpoint.BeforeMove)
 	}
 	// MaxSteps is retained for client compatibility. Productive tasks may run
 	// beyond its legacy value, while the operator-configured turn budget still
 	// bounds total work.
-	repositoryContext, err := NewRepositoryContextBuilder(
-		RepositoryContextOptions{},
-	).Build(
-		ctx,
-		request.Workspace,
-		request.Task,
-	)
+	contextBuilder := NewRepositoryContextBuilder(RepositoryContextOptions{})
+	var repositoryContext RepositoryContext
+	if request.FilesystemCheckpoint != nil {
+		repositoryContext, err = contextBuilder.BuildFilesystem(ctx, request.Workspace, request.Task)
+	} else {
+		repositoryContext, err = contextBuilder.Build(ctx, request.Workspace, request.Task)
+	}
 	if err != nil {
 		return result, fmt.Errorf("build repository context: %w", err)
 	}
@@ -75,7 +85,7 @@ func (e *Engine) Run(ctx context.Context, request RunRequest) (RunResult, error)
 				formatRepositoryContext(repositoryContext),
 		},
 	}
-	baselineDiff, _, err := workspace.GitDiff(ctx)
+	baselineDiff, _, err := workspaceDiff(ctx, workspace, request.FilesystemCheckpoint)
 	if err != nil {
 		return result, err
 	}
@@ -100,7 +110,7 @@ func (e *Engine) Run(ctx context.Context, request RunRequest) (RunResult, error)
 		if err := emitLifecycleEvent(&result, request, modelTurn); err != nil {
 			return result, fmt.Errorf("publish model-turn progress: %w", err)
 		}
-		response, err := e.chatOnce(ctx, request.Model, boundedAgentMessages(messages, step > 1))
+		response, err := e.chatOnce(ctx, request.Model, boundedAgentMessages(messages, step > 1), request.FilesystemCheckpoint != nil)
 		if err != nil {
 			result.FinalSummary = err.Error()
 			return result, err
@@ -129,6 +139,7 @@ func (e *Engine) Run(ctx context.Context, request RunRequest) (RunResult, error)
 				toolStarted := newLifecycleEvent(EventToolCall, "executing tool "+call.Function.Name)
 				toolStarted.Step = request.StepOffset + step
 				toolStarted.ToolName = call.Function.Name
+				toolStarted.Path = toolCallPath(call)
 				if err := emitLifecycleEvent(&result, request, toolStarted); err != nil {
 					return result, fmt.Errorf("publish tool-call progress: %w", err)
 				}
@@ -144,7 +155,7 @@ func (e *Engine) Run(ctx context.Context, request RunRequest) (RunResult, error)
 						editingStarted = true
 					}
 				}
-				observation, toolErr := executeTool(ctx, workspace, call)
+				observation, toolErr := executeTool(ctx, workspace, call, request.FilesystemCheckpoint)
 				if err := ctx.Err(); err != nil {
 					result.FinalSummary = "session cancelled"
 					return result, err
@@ -186,9 +197,26 @@ func (e *Engine) Run(ctx context.Context, request RunRequest) (RunResult, error)
 				if toolErr != nil {
 					toolResult = "tool " + call.Function.Name + " failed"
 				}
+				if toolErr == nil && isSourceEditorTool(call.Function.Name) {
+					fileEvent := newLifecycleEvent(EventFilesystemChange, observation)
+					fileEvent.Step = request.StepOffset + step
+					fileEvent.ToolName = call.Function.Name
+					fileEvent.Path = toolCallPath(call)
+					if request.FilesystemCheckpoint != nil {
+						liveDiff, diffErr := request.FilesystemCheckpoint.Diff()
+						if diffErr != nil {
+							return result, fmt.Errorf("collect live filesystem diff after %s: %w", call.Function.Name, diffErr)
+						}
+						fileEvent.FilesystemDiff = &liveDiff
+					}
+					if err := emitLifecycleEvent(&result, request, fileEvent); err != nil {
+						return result, fmt.Errorf("publish file-change progress: %w", err)
+					}
+				}
 				toolFinished := newLifecycleEvent(EventToolResult, toolResult)
 				toolFinished.Step = request.StepOffset + step
 				toolFinished.ToolName = call.Function.Name
+				toolFinished.Path = toolCallPath(call)
 				if err := emitLifecycleEvent(&result, request, toolFinished); err != nil {
 					return result, fmt.Errorf("publish tool-result progress: %w", err)
 				}
@@ -203,7 +231,7 @@ func (e *Engine) Run(ctx context.Context, request RunRequest) (RunResult, error)
 			result.StepEvents = append(result.StepEvents, StepEvent{Step: step, Kind: kind})
 		}
 
-		diff, changed, diffErr := workspace.GitDiff(ctx)
+		diff, changed, diffErr := workspaceDiff(ctx, workspace, request.FilesystemCheckpoint)
 		if diffErr != nil {
 			return result, diffErr
 		}
@@ -213,6 +241,9 @@ func (e *Engine) Run(ctx context.Context, request RunRequest) (RunResult, error)
 		}
 		result.GitDiff, result.ChangedFiles = diff, changed
 		meaningfulDiff := madeMeaningfulEdit && diff != baselineDiff && HasMeaningfulSourceDiff(diff)
+		if request.FilesystemCheckpoint != nil {
+			meaningfulDiff = len(changed) > 0
+		}
 		sourceFingerprint := sha256.Sum256([]byte(diff))
 		newSourceState := false
 		if meaningfulDiff {
@@ -229,6 +260,20 @@ func (e *Engine) Run(ctx context.Context, request RunRequest) (RunResult, error)
 		if limit := agentStagnationLimit(); limit > 0 && stagnantTurns >= limit {
 			result.FinalSummary = fmt.Sprintf("agent stuck: %d consecutive turns without new observations or meaningful source changes", stagnantTurns)
 			return result, nil
+		}
+		if request.FilesystemCheckpoint != nil {
+			if len(response.Message.ToolCalls) == 0 && meaningfulDiff {
+				result.Status = StatusSuccess
+				result.FinalSummary = strings.TrimSpace(response.Message.Content)
+				if result.FinalSummary == "" {
+					result.FinalSummary = "source change verified"
+				}
+				return result, nil
+			}
+			if len(response.Message.ToolCalls) == 0 && !meaningfulDiff {
+				messages = append(messages, api.Message{Role: "user", Content: toolRetryPrompt})
+			}
+			continue
 		}
 		if !meaningfulDiff || !patchedThisTurn {
 			if len(response.Message.ToolCalls) == 0 && !meaningfulDiff {
@@ -347,7 +392,7 @@ func (e *Engine) Run(ctx context.Context, request RunRequest) (RunResult, error)
 	} else {
 		result.FinalSummary = "agent stopped before completing the task"
 	}
-	diff, changed, diffErr := workspace.GitDiff(ctx)
+	diff, changed, diffErr := workspaceDiff(ctx, workspace, request.FilesystemCheckpoint)
 	if diffErr == nil {
 		result.GitDiff, result.ChangedFiles = diff, changed
 	}
@@ -476,7 +521,7 @@ func newLifecycleEvent(
 	}
 }
 
-func (e *Engine) chatOnce(ctx context.Context, model string, messages []api.Message) (api.ChatResponse, error) {
+func (e *Engine) chatOnce(ctx context.Context, model string, messages []api.Message, filesystemOnly bool) (api.ChatResponse, error) {
 	stream := false
 	truncate := true
 	options := map[string]any{}
@@ -484,7 +529,7 @@ func (e *Engine) chatOnce(ctx context.Context, model string, messages []api.Mess
 		options["num_ctx"] = window
 	}
 	req := &api.ChatRequest{
-		Model: model, Messages: messages, Tools: agentTools(), Stream: &stream,
+		Model: model, Messages: messages, Tools: agentTools(filesystemOnly), Stream: &stream,
 		Options: options, Truncate: &truncate,
 	}
 	var aggregate api.ChatResponse
@@ -515,6 +560,24 @@ func stringArg(args *api.ToolCallFunctionArguments, name string) (string, error)
 		return "", fmt.Errorf("%s must be a string", name)
 	}
 	return s, nil
+}
+
+func toolCallPath(call api.ToolCall) string {
+	switch call.Function.Name {
+	case "move_file":
+		source, _ := stringArg(&call.Function.Arguments, "source")
+		destination, _ := stringArg(&call.Function.Arguments, "destination")
+		return source + " -> " + destination
+	default:
+		path, _ := stringArg(&call.Function.Arguments, "path")
+		if path == "" {
+			path, _ = stringArg(&call.Function.Arguments, "pattern")
+		}
+		if path == "" {
+			path, _ = stringArg(&call.Function.Arguments, "query")
+		}
+		return path
+	}
 }
 
 // intFromToolArg reads a numeric tool argument. Depending on the model
@@ -638,8 +701,11 @@ func editsFromSlice(values []any) ([]agenttools.Edit, error) {
 	return edits, nil
 }
 
-func executeTool(ctx context.Context, w *agenttools.Workspace, call api.ToolCall) (string, error) {
+func executeTool(ctx context.Context, w *agenttools.Workspace, call api.ToolCall, checkpoint *agenttools.FilesystemCheckpoint) (string, error) {
 	args := &call.Function.Arguments
+	if checkpoint != nil && call.Function.Name == "shell" {
+		return "", errors.New("shell execution is disabled during a filesystem-checkpointed self-development edit")
+	}
 	switch call.Function.Name {
 	case "search_files":
 		q, _ := stringArg(args, "query")
@@ -712,7 +778,7 @@ func executeTool(ctx context.Context, w *agenttools.Workspace, call api.ToolCall
 		}
 		return w.MultiEdit(p, edits)
 	case "git_diff":
-		diff, _, err := w.GitDiff(ctx)
+		diff, _, err := workspaceDiff(ctx, w, checkpoint)
 		return diff, err
 	case "web_search":
 		query, err := stringArg(args, "query")
@@ -733,6 +799,28 @@ func executeTool(ctx context.Context, w *agenttools.Workspace, call api.ToolCall
 	default:
 		return "", fmt.Errorf("unknown tool %q", call.Function.Name)
 	}
+}
+
+func workspaceDiff(ctx context.Context, w *agenttools.Workspace, checkpoint *agenttools.FilesystemCheckpoint) (string, []string, error) {
+	if checkpoint == nil {
+		return w.GitDiff(ctx)
+	}
+	diff, err := checkpoint.Diff()
+	if err != nil {
+		return "", nil, err
+	}
+	changed := make([]string, 0, len(diff.Files)*2)
+	for _, file := range diff.Files {
+		if file.Status == "move_source" {
+			changed = append(changed, file.Path)
+			continue
+		}
+		if file.OldPath != "" {
+			changed = append(changed, file.OldPath)
+		}
+		changed = append(changed, file.Path)
+	}
+	return diff.Unified, changed, nil
 }
 
 func verifyAll(ctx context.Context, w *agenttools.Workspace, commands []string) ([]VerificationResult, bool) {

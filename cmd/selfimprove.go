@@ -11,7 +11,6 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/ollama/ollama/api"
 	"github.com/ollama/ollama/internal/agent"
 	"github.com/ollama/ollama/internal/selfimprove"
 )
@@ -32,10 +31,9 @@ func defaultJournalPath() (string, error) {
 	return filepath.Join(home, ".ollama", "self-improve", "journal.jsonl"), nil
 }
 
-// SelfImproveHandler runs OwnBot's autonomous self-improvement loop. Every cycle
-// researches a topic on the internet, edits this repository, and is kept only if
-// the loop's own verification passes; otherwise the working tree is reset to the
-// cycle's checkpoint.
+// SelfImproveHandler runs a local-model transaction against the live workspace.
+// Each cycle is retained only if its filesystem diff passes independent
+// verification; otherwise its filesystem checkpoint is restored.
 func SelfImproveHandler(cmd *cobra.Command, _ []string) error {
 	flags := cmd.Flags()
 
@@ -56,6 +54,9 @@ func SelfImproveHandler(cmd *cobra.Command, _ []string) error {
 	model, err := flags.GetString("model")
 	if err != nil {
 		return err
+	}
+	if model != selfimprove.CustomRuntimeModel {
+		return fmt.Errorf("self-improve requires the configured local model %q; refusing model %q", selfimprove.CustomRuntimeModel, model)
 	}
 	cycles, err := flags.GetInt("cycles")
 	if err != nil {
@@ -101,15 +102,15 @@ func SelfImproveHandler(cmd *cobra.Command, _ []string) error {
 	}
 	defer journal.Close()
 
-	client, err := api.ClientFromEnvironment()
-	if err != nil {
-		return err
-	}
-
 	// Ctrl-C cancels cleanly between cycles instead of mid-write. The loop
 	// already reverts an interrupted cycle.
 	ctx, stop := signal.NotifyContext(cmd.Context(), os.Interrupt)
 	defer stop()
+
+	client, runtimeDiagnostic, err := selfimprove.VerifyCustomRuntime(ctx)
+	if err != nil {
+		return err
+	}
 
 	logf := func(format string, args ...any) {
 		fmt.Fprintf(os.Stderr, "ownbot: "+format+"\n", args...)
@@ -118,13 +119,14 @@ func SelfImproveHandler(cmd *cobra.Command, _ []string) error {
 	logf("self-improve starting")
 	logf("  workspace: %s", workspace)
 	logf("  model:     %s", model)
+	logf("  runtime:   %s (PID %d; inference verified)", runtimeDiagnostic.Endpoint, runtimeDiagnostic.PID)
 	logf("  cycles:    %d   budget: %s", cycles, budget)
 	logf("  verify:    %s", strings.Join(verify, " ; "))
 	logf("  journal:   %s", journalPath)
 	if researchOnly {
 		logf("  mode:      research only (no file will be changed)")
 	}
-	logf("Every cycle is checkpointed before it runs and reset if it fails verification.")
+	logf("Every cycle checkpoints live files before editing; failed verification restores the filesystem checkpoint.")
 
 	cfg := selfimprove.Config{
 		Workspace:    workspace,
@@ -188,15 +190,15 @@ func newSelfImproveCmd() *cobra.Command {
 	selfImproveCmd := &cobra.Command{
 		Use:   "self-improve",
 		Short: "Let OwnBot research the internet and improve its own source",
-		Long: `OwnBot researches a topic on the internet, edits this repository, and keeps the
-change only if verification passes.
+		Long: `OwnBot uses the configured local model to edit the live workspace and keeps the
+change only if filesystem-based verification passes.
 
 Every cycle is guarded:
-  - the working tree is checkpointed before the cycle runs
-  - the loop re-runs the verification commands itself, rather than trusting the
-    model's claim that they passed
-  - a cycle that leaves conflict markers, touches .git, or fails verification is
-    reset back to its checkpoint
+  - files are checkpointed immediately before agent-tool mutations
+  - the filesystem diff is calculated from actual on-disk contents
+  - verification and optional build commands run independently of the model
+  - failed transactions restore and verify the filesystem checkpoint
+  - Git is optional and is never used to commit or reset source changes
 
 Use --research-only to gather information without changing any file.`,
 		Args: cobra.NoArgs,
@@ -210,7 +212,7 @@ Use --research-only to gather information without changing any file.`,
 	selfImproveCmd.Flags().StringArray("topic", selfimprove.DefaultTopics(), "Research topic for a cycle, in order (repeatable)")
 	selfImproveCmd.Flags().String("workspace", "", "Repository to improve (default: current directory)")
 	selfImproveCmd.Flags().String("build", "", "Extra command that must pass to keep a cycle, such as a compile step")
-	selfImproveCmd.Flags().Bool("allow-dirty", false, "Checkpoint uncommitted work instead of refusing to start")
+	selfImproveCmd.Flags().Bool("allow-dirty", false, "Deprecated: live filesystem transactions checkpoint their own changes")
 	selfImproveCmd.Flags().Bool("research-only", false, "Gather information without changing any file")
 	selfImproveCmd.Flags().String("journal", "", "Journal file (default: ~/.ollama/self-improve/journal.jsonl)")
 

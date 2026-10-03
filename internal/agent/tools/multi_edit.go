@@ -59,8 +59,18 @@ func (w *Workspace) MultiEdit(path string, edits []Edit) (string, error) {
 	if content == string(original) {
 		return "", errors.New("multi_edit produced no change")
 	}
+	if err := w.beforeMutation(resolved); err != nil {
+		return "", err
+	}
 	if err := writeFileAtomic(resolved, content, mode); err != nil {
 		return "", err
+	}
+	written, err := os.ReadFile(resolved)
+	if err != nil {
+		return "", fmt.Errorf("verify multi-edit file %q: %w", path, err)
+	}
+	if string(written) != content {
+		return "", fmt.Errorf("verify multi-edit file %q: on-disk content does not match edits", path)
 	}
 	return fmt.Sprintf("applied %d edits to %s", len(edits), path), nil
 }

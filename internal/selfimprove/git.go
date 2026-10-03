@@ -14,10 +14,8 @@ import (
 	"strings"
 )
 
-// Git is a thin wrapper around the git CLI scoped to one working tree. The
-// self-improvement loop uses it to take a checkpoint commit before every cycle
-// and to reset the tree back to that checkpoint when a cycle fails a guard, so
-// a bad change can never outlive the cycle that produced it.
+// Git provides optional repository inspection and metadata-safety helpers.
+// Filesystem checkpoints, diffs, retention, and rollback do not depend on it.
 type Git struct {
 	dir string
 }
@@ -180,7 +178,8 @@ func (g *Git) GitMetadataHash(_ context.Context) (string, error) {
 
 func (g *Git) SnapshotMetadata() (string, error) {
 	gitDir := filepath.Join(g.dir, ".git")
-	if _, err := os.Stat(gitDir); err != nil {
+	info, err := os.Lstat(gitDir)
+	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return "", nil
 		}
@@ -191,7 +190,16 @@ func (g *Git) SnapshotMetadata() (string, error) {
 		return "", err
 	}
 	backupDir := filepath.Join(root, ".git")
-	if err := copyDir(gitDir, backupDir); err != nil {
+	if info.IsDir() {
+		err = copyDir(gitDir, backupDir)
+	} else {
+		var content []byte
+		content, err = os.ReadFile(gitDir)
+		if err == nil {
+			err = os.WriteFile(backupDir, content, info.Mode().Perm())
+		}
+	}
+	if err != nil {
 		_ = os.RemoveAll(root)
 		return "", err
 	}
@@ -207,7 +215,20 @@ func (g *Git) RestoreMetadata(snapshotRoot string) error {
 		return fmt.Errorf("restore git metadata: %w", err)
 	}
 	backupDir := filepath.Join(snapshotRoot, ".git")
-	if err := copyDir(backupDir, gitDir); err != nil {
+	info, err := os.Stat(backupDir)
+	if err != nil {
+		return fmt.Errorf("restore git metadata: %w", err)
+	}
+	if info.IsDir() {
+		err = copyDir(backupDir, gitDir)
+	} else {
+		var content []byte
+		content, err = os.ReadFile(backupDir)
+		if err == nil {
+			err = os.WriteFile(gitDir, content, info.Mode().Perm())
+		}
+	}
+	if err != nil {
 		return fmt.Errorf("restore git metadata: %w", err)
 	}
 	return nil

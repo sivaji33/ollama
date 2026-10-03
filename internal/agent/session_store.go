@@ -10,6 +10,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	agenttools "github.com/ollama/ollama/internal/agent/tools"
 )
 
 const (
@@ -47,11 +49,13 @@ type SessionSnapshot struct {
 }
 
 type SessionEvent struct {
-	Type      SessionEventType `json:"type"`
-	Timestamp time.Time        `json:"timestamp"`
-	Step      int              `json:"step,omitempty"`
-	ToolName  string           `json:"tool_name,omitempty"`
-	Message   string           `json:"message,omitempty"`
+	Type           SessionEventType           `json:"type"`
+	Timestamp      time.Time                  `json:"timestamp"`
+	Step           int                        `json:"step,omitempty"`
+	ToolName       string                     `json:"tool_name,omitempty"`
+	Path           string                     `json:"path,omitempty"`
+	FilesystemDiff *agenttools.FilesystemDiff `json:"filesystem_diff,omitempty"`
+	Message        string                     `json:"message,omitempty"`
 }
 
 type SessionStore struct {

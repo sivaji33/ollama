@@ -3,10 +3,8 @@ package selfimprove
 import "strings"
 
 // DefaultTopics steer each cycle at a capability the operator asked the loop to
-// grow: coding skill and reasoning skill. The topics are framed as research
-// questions rather than instructions, because the agent's own system prompt
-// expects it to research first with web_search and web_fetch and change this
-// repository second.
+// grow: coding skill and reasoning skill. The built-in topics ask for research
+// when external guidance is part of the requested improvement.
 //
 // Each topic is deliberately narrow. A cycle that tries to do several things at
 // once produces a change that is hard to verify and hard to revert.
@@ -22,33 +20,31 @@ func DefaultTopics() []string {
 }
 
 // buildTask turns one topic into the task text for one cycle. The operating
-// rules are in the brief itself because an unattended loop that edits its own
-// source has to be told explicitly what it must never leave behind.
+// rules require the agent to complete every requested operation before its
+// final response and independent verification.
 func buildTask(topic string, verify []string, researchOnly bool) string {
 	var b strings.Builder
 
 	if researchOnly {
 		b.WriteString("Research cycle. Do not modify any file in this cycle.\n\n")
 	} else {
-		b.WriteString("You are improving your own source repository, one small and fully verified change at a time.\n\n")
+		b.WriteString("Complete the requested improvement across every necessary file before finishing. Make the smallest coherent change, but do not stop after the first successful edit if the task has more requested operations.\n\n")
 	}
 
 	b.WriteString("Topic for this cycle:\n")
 	b.WriteString(topic)
 	b.WriteString("\n\nRules for this cycle:\n")
-	b.WriteString("1. Research first with web_search and web_fetch, and cite what you learned in your final summary.\n")
+	b.WriteString("1. Inspect the relevant workspace files first. Use web_search and web_fetch only when current external information is necessary.\n")
 	if researchOnly {
 		b.WriteString("2. Change nothing. Report findings that a later cycle can act on.\n")
 	} else {
-		b.WriteString("2. Make the smallest change that delivers the improvement. One concern per cycle.\n")
-		b.WriteString("3. Run the focused tests for every package you touch, not the whole repository.\n")
+		b.WriteString("2. Complete all requested file changes using workspace file tools; shell execution is unavailable. The transaction controller runs the configured tests and build after all edits.\n")
 	}
-	b.WriteString("4. Never leave an unfinished merge, conflict marker, or placeholder behind.\n")
-	b.WriteString("5. Never modify anything inside .git, and never delete a file you did not create.\n")
-	b.WriteString("6. If you cannot make a safe verified improvement, change nothing and say so plainly.\n")
+	b.WriteString("3. Never modify anything inside .git or leave conflict markers behind.\n")
+	b.WriteString("4. Only claim changes that are reflected in the live filesystem. If you cannot complete the task, state what remains.\n")
 
 	if len(verify) > 0 && !researchOnly {
-		b.WriteString("\nThe change must keep every one of these commands passing:\n")
+		b.WriteString("\nAfter all requested edits, the transaction controller will run these independent gates:\n")
 		for _, command := range verify {
 			b.WriteString("- " + command + "\n")
 		}

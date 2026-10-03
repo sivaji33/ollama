@@ -578,3 +578,125 @@ export async function getCloudStatus(): Promise<CloudStatusResponse | null> {
     source: (data.source as CloudStatusSource) || "none",
   };
 }
+
+export interface SelfDevelopmentRequest {
+  workspace?: string;
+  task: string;
+  verify: string[];
+  build?: string;
+}
+
+export interface SelfDevelopmentRuntime {
+  executable: string;
+  pid?: number;
+  port: string;
+  endpoint: string;
+  process_state: string;
+  runtime_identity: string;
+  model: string;
+  model_availability: string;
+  inference: string;
+  failure_state?: string;
+}
+
+export interface SelfDevelopmentFileChange {
+  path: string;
+  old_path?: string;
+  status: string;
+  before?: string;
+  after?: string;
+  unified_diff: string;
+  additions: number;
+  deletions: number;
+  before_lines: number;
+  after_lines: number;
+}
+
+export interface SelfDevelopmentDiff {
+  files: SelfDevelopmentFileChange[];
+  unified_diff: string;
+  additions: number;
+  deletions: number;
+}
+
+export interface SelfDevelopmentEvent {
+  id: string;
+  stage: string;
+  status: string;
+  tool_name?: string;
+  path?: string;
+  filesystem_diff?: SelfDevelopmentDiff;
+  message: string;
+  timestamp: string;
+}
+
+export interface SelfDevelopmentCycle {
+  id: string;
+  index: number;
+  topic: string;
+  outcome: string;
+  reason?: string;
+  summary?: string;
+  changed_files?: string[];
+  filesystem_diff: SelfDevelopmentDiff;
+  files_retained: number;
+  files_restored: number;
+}
+
+export interface SelfDevelopmentResult {
+  id: string;
+  cycles: SelfDevelopmentCycle[];
+  kept: number;
+  reverted: number;
+  stopped?: string;
+}
+
+export interface SelfDevelopmentSnapshot {
+  id: string;
+  state: string;
+  workspace: string;
+  task: string;
+  runtime: SelfDevelopmentRuntime;
+  events: SelfDevelopmentEvent[];
+  result?: SelfDevelopmentResult;
+  error?: string;
+}
+
+export async function startSelfDevelopment(
+  request: SelfDevelopmentRequest,
+): Promise<SelfDevelopmentSnapshot> {
+  const response = await fetch(`${API_BASE}/api/self-development`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(request),
+  });
+  const data = await response.json();
+  if (!response.ok) {
+    throw new Error(data.error || `Self-development start failed: ${response.status}`);
+  }
+  return data as SelfDevelopmentSnapshot;
+}
+
+export async function getSelfDevelopment(
+  id: string,
+): Promise<SelfDevelopmentSnapshot> {
+  const response = await fetch(
+    `${API_BASE}/api/self-development/${encodeURIComponent(id)}`,
+  );
+  const data = await response.json();
+  if (!response.ok) {
+    throw new Error(data.error || `Self-development status failed: ${response.status}`);
+  }
+  return data as SelfDevelopmentSnapshot;
+}
+
+export async function cancelSelfDevelopment(id: string): Promise<void> {
+  const response = await fetch(
+    `${API_BASE}/api/self-development/${encodeURIComponent(id)}/cancel`,
+    { method: "POST" },
+  );
+  if (!response.ok) {
+    const data = await response.json();
+    throw new Error(data.error || `Self-development cancellation failed: ${response.status}`);
+  }
+}

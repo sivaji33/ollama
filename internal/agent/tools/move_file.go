@@ -45,11 +45,31 @@ func (w *Workspace) MoveFile(source, destination string) (string, error) {
 	if skippedDir(filepath.ToSlash(sourceRel)) || skippedDir(filepath.ToSlash(destinationRel)) {
 		return "", fmt.Errorf("refusing to move version-control path")
 	}
+	if err := w.beforeMoving(sourceResolved, destinationResolved); err != nil {
+		return "", err
+	}
+	content, err := os.ReadFile(sourceResolved)
+	if err != nil {
+		return "", err
+	}
 	if err := os.MkdirAll(filepath.Dir(destinationResolved), 0o755); err != nil {
 		return "", err
 	}
 	if err := os.Rename(sourceResolved, destinationResolved); err != nil {
 		return "", err
+	}
+	moved, err := os.ReadFile(destinationResolved)
+	if err != nil {
+		return "", fmt.Errorf("verify moved file %q: %w", destination, err)
+	}
+	if string(moved) != string(content) {
+		return "", fmt.Errorf("verify moved file %q: content does not match source", destination)
+	}
+	if _, err := os.Lstat(sourceResolved); !os.IsNotExist(err) {
+		if err == nil {
+			return "", fmt.Errorf("verify moved file %q: source still exists", source)
+		}
+		return "", fmt.Errorf("verify moved file %q: %w", source, err)
 	}
 	return fmt.Sprintf("moved %s to %s", source, destination), nil
 }

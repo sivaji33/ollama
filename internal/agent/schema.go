@@ -14,8 +14,8 @@ func tool(name, description string, required []string, properties map[string]api
 	}
 	return api.Tool{Type: "function", Function: api.ToolFunction{Name: name, Description: description, Parameters: api.ToolFunctionParameters{Type: "object", Properties: props, Required: required}}}
 }
-func agentTools() api.Tools {
-	return api.Tools{
+func agentTools(filesystemOnly ...bool) api.Tools {
+	tools := api.Tools{
 		tool("search_files", "List or search files beneath the workspace root.", nil, map[string]api.ToolProperty{"query": property("string", "Optional case-insensitive path or content query.")}),
 		tool("list_files", "List files matching an optional glob pattern. Relative patterns resolve against the workspace; absolute patterns anywhere are allowed.", nil, map[string]api.ToolProperty{"pattern": property("string", "Optional glob pattern such as \"internal/*.go\" or an absolute path. Defaults to top-level entries.")}),
 		tool("read_file", "Read a text file. Relative paths resolve against the workspace; absolute paths are allowed.", []string{"path"}, map[string]api.ToolProperty{"path": property("string", "File path, relative to the workspace or absolute.")}),
@@ -29,6 +29,16 @@ func agentTools() api.Tools {
 		tool("web_search", "Search the internet for current knowledge, documentation, or best practices; returns citation-ready titles, URLs, and snippets.", []string{"query"}, map[string]api.ToolProperty{"query": property("string", "Search query."), "max_results": property("integer", "Optional result count, 1-10. Defaults to 5.")}),
 		tool("web_fetch", "Fetch an absolute http(s) URL and return its readable text for research.", []string{"url"}, map[string]api.ToolProperty{"url": property("string", "Absolute http(s) URL, usually discovered with web_search.")}),
 	}
+	if len(filesystemOnly) > 0 && filesystemOnly[0] {
+		filtered := make(api.Tools, 0, len(tools)-1)
+		for _, item := range tools {
+			if item.Function.Name != "shell" {
+				filtered = append(filtered, item)
+			}
+		}
+		return filtered
+	}
+	return tools
 }
 
 func editsProperty() api.ToolProperty {

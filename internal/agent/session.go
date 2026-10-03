@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/ollama/ollama/api"
+	agenttools "github.com/ollama/ollama/internal/agent/tools"
 )
 
 const (
@@ -33,9 +34,10 @@ type RunRequest struct {
 	// StepOffset is server-owned session history and is never accepted from JSON.
 	StepOffset int `json:"-"`
 	// Deprecated: accepted from existing clients, but ignored by the engine.
-	MaxSteps         int                      `json:"max_steps,omitempty"`
-	Verify           []string                 `json:"verify,omitempty"`
-	OnLifecycleEvent func(SessionEvent) error `json:"-"`
+	MaxSteps             int                              `json:"max_steps,omitempty"`
+	Verify               []string                         `json:"verify,omitempty"`
+	OnLifecycleEvent     func(SessionEvent) error         `json:"-"`
+	FilesystemCheckpoint *agenttools.FilesystemCheckpoint `json:"-"`
 }
 
 type ToolCallRecord struct {

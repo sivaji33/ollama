@@ -22,6 +22,7 @@ const (
 	EventToolResult         SessionEventType = "tool_result"
 	EventEditDetected       SessionEventType = "edit_detected"
 	EventEditingStarted     SessionEventType = "editing_started"
+	EventFilesystemChange   SessionEventType = "filesystem_change"
 	EventDiffDetected       SessionEventType = "diff_detected"
 	EventVerificationStart  SessionEventType = "verification_started"
 	EventVerificationPassed SessionEventType = "verification_passed"

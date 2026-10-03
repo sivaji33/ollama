@@ -1,8 +1,12 @@
 import { Link } from "@/components/ui/link";
 import { ChatIcon } from "@/components/ChatIcon";
-import { Cog6ToothIcon, RectangleGroupIcon } from "@heroicons/react/24/outline";
+import {
+  CodeBracketSquareIcon,
+  Cog6ToothIcon,
+  RectangleGroupIcon,
+} from "@heroicons/react/24/outline";
 
-type AppSection = "apps" | "chat" | "settings";
+type AppSection = "apps" | "chat" | "settings" | "development";
 
 export function AppNavigation({ current }: { current: AppSection }) {
   const itemClass = (section: AppSection) =>
@@ -29,6 +33,14 @@ export function AppNavigation({ current }: { current: AppSection }) {
       <Link to="/settings" className={itemClass("settings")} draggable={false}>
         <Cog6ToothIcon className="h-5 w-5 stroke-current" />
         <span className="truncate">Settings</span>
+      </Link>
+      <Link
+        to="/self-development"
+        className={itemClass("development")}
+        draggable={false}
+      >
+        <CodeBracketSquareIcon className="h-5 w-5 stroke-current" />
+        <span className="truncate">Live Development</span>
       </Link>
     </div>
   );

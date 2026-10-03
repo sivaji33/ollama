@@ -27,8 +27,17 @@ func (w *Workspace) DeleteFile(path string) (string, error) {
 	if skippedDir(filepath.ToSlash(rel)) {
 		return "", fmt.Errorf("refusing to delete version-control path %q", path)
 	}
+	if err := w.beforeMutation(resolved); err != nil {
+		return "", err
+	}
 	if err := os.Remove(resolved); err != nil {
 		return "", err
+	}
+	if _, err := os.Lstat(resolved); !os.IsNotExist(err) {
+		if err == nil {
+			return "", fmt.Errorf("verify deletion of %q: path still exists", path)
+		}
+		return "", fmt.Errorf("verify deletion of %q: %w", path, err)
 	}
 	return fmt.Sprintf("deleted %s", path), nil
 }

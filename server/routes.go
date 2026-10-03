@@ -38,8 +38,8 @@ import (
 	"github.com/ollama/ollama/envconfig"
 	"github.com/ollama/ollama/format"
 	"github.com/ollama/ollama/fs/ggml"
-	internalcloud "github.com/ollama/ollama/internal/cloud"
 	agenttools "github.com/ollama/ollama/internal/agent/tools"
+	internalcloud "github.com/ollama/ollama/internal/cloud"
 	"github.com/ollama/ollama/internal/proxy"
 	"github.com/ollama/ollama/llm"
 	"github.com/ollama/ollama/logutil"
@@ -106,6 +106,8 @@ type Server struct {
 	agentSessionCtl          agentSessionControl
 	agentSessionRecoveryOnce sync.Once
 	agentSessionRecoveryErr  error
+	selfDevelopmentMu        sync.RWMutex
+	selfDevelopmentRuns      map[string]*selfDevelopmentRun
 }
 
 func init() {
@@ -1923,6 +1925,9 @@ func (s *Server) GenerateRoutes() (http.Handler, error) {
 	r.GET("/api/agent/session/:id", s.AgentSessionGetHandler)
 	r.GET("/api/agent/session/:id/events", s.AgentSessionEventsHandler)
 	r.GET("/api/agent/session/:id/diff", s.AgentSessionDiffHandler)
+	r.POST("/api/self-development", s.SelfDevelopmentStartHandler)
+	r.GET("/api/self-development/:id", s.SelfDevelopmentGetHandler)
+	r.POST("/api/self-development/:id/cancel", s.SelfDevelopmentCancelHandler)
 	r.POST("/api/embed", s.EmbedHandler)
 	r.POST("/api/embeddings", s.EmbeddingsHandler)
 

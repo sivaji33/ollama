@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/ollama/ollama/internal/agent"
+	agenttools "github.com/ollama/ollama/internal/agent/tools"
 )
 
 // verifyOK always exits 0; verifyFail always exits non-zero. Both are plain git
@@ -26,7 +27,7 @@ const (
 type fakeRunner struct {
 	result   agent.RunResult
 	err      error
-	onRun    func(workspace string)
+	onRun    func(workspace string, checkpoint *agenttools.FilesystemCheckpoint)
 	calls    int
 	requests []agent.RunRequest
 }
@@ -35,7 +36,7 @@ func (f *fakeRunner) Run(_ context.Context, request agent.RunRequest) (agent.Run
 	f.calls++
 	f.requests = append(f.requests, request)
 	if f.onRun != nil {
-		f.onRun(request.Workspace)
+		f.onRun(request.Workspace, request.FilesystemCheckpoint)
 	}
 	result := f.result
 	if result.Status == "" {
@@ -45,6 +46,15 @@ func (f *fakeRunner) Run(_ context.Context, request agent.RunRequest) (agent.Run
 		result.FinalSummary = "applied a verified change"
 	}
 	return result, f.err
+}
+
+func writeCheckpointed(t *testing.T, workspace string, checkpoint *agenttools.FilesystemCheckpoint, name, content string) {
+	t.Helper()
+	path := filepath.Join(workspace, filepath.FromSlash(name))
+	if err := checkpoint.BeforeMutation(path); err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, workspace, name, content)
 }
 
 func gitIn(t *testing.T, dir string, args ...string) string {
@@ -121,8 +131,9 @@ func baseConfig(workspace string) Config {
 
 func TestRunKeepsVerifiedChange(t *testing.T) {
 	dir := initRepo(t)
-	runner := &fakeRunner{onRun: func(workspace string) {
-		writeFile(t, workspace, "main.go", "package main\n\nfunc main() {}\n")
+	headBefore := gitIn(t, dir, "rev-parse", "HEAD")
+	runner := &fakeRunner{onRun: func(workspace string, checkpoint *agenttools.FilesystemCheckpoint) {
+		writeCheckpointed(t, workspace, checkpoint, "main.go", "package main\n\nfunc main() {}\n")
 	}}
 
 	result, err := Run(context.Background(), baseConfig(dir), runner)
@@ -135,17 +146,38 @@ func TestRunKeepsVerifiedChange(t *testing.T) {
 	if got := readFile(t, dir, "main.go"); !strings.Contains(got, "func main()") {
 		t.Fatalf("verified change was not kept: %q", got)
 	}
-	if subject := headSubject(t, dir); !strings.Contains(subject, "self-improve cycle 1") {
-		t.Fatalf("head subject = %q, want a self-improve cycle commit", subject)
+	if head := gitIn(t, dir, "rev-parse", "HEAD"); head != headBefore {
+		t.Fatalf("HEAD changed from %q to %q; retaining source must not require a commit", headBefore, head)
+	}
+}
+
+func TestRunWorksWithoutGitRepository(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, dir, "main.go", "package main\n")
+	cfg := baseConfig(dir)
+	cfg.Verify = []string{"exit 0"}
+	runner := &fakeRunner{onRun: func(workspace string, checkpoint *agenttools.FilesystemCheckpoint) {
+		writeCheckpointed(t, workspace, checkpoint, "main.go", "package main\n\nfunc main() {}\n")
+	}}
+	result, err := Run(context.Background(), cfg, runner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Kept != 1 {
+		t.Fatalf("kept = %d, want 1 (cycles: %+v)", result.Kept, result.Cycles)
+	}
+	if got := readFile(t, dir, "main.go"); !strings.Contains(got, "func main()") {
+		t.Fatalf("live change not retained in the non-Git workspace: %q", got)
 	}
 }
 
 func TestRunRevertsChangeThatFailsVerification(t *testing.T) {
 	dir := initRepo(t)
+	headBefore := gitIn(t, dir, "rev-parse", "HEAD")
 	cfg := baseConfig(dir)
 	cfg.Verify = []string{verifyFail}
-	runner := &fakeRunner{onRun: func(workspace string) {
-		writeFile(t, workspace, "main.go", "package main\n\n// broken\n")
+	runner := &fakeRunner{onRun: func(workspace string, checkpoint *agenttools.FilesystemCheckpoint) {
+		writeCheckpointed(t, workspace, checkpoint, "main.go", "package main\n\n// broken\n")
 	}}
 
 	result, err := Run(context.Background(), cfg, runner)
@@ -161,8 +193,8 @@ func TestRunRevertsChangeThatFailsVerification(t *testing.T) {
 	// A reverted cycle leaves the history exactly where it started: the
 	// checkpoint is a reset target, not necessarily a new commit (a clean tree
 	// has nothing to checkpoint).
-	if head := gitIn(t, dir, "rev-parse", "HEAD"); head != result.Cycles[0].HeadBefore {
-		t.Fatalf("HEAD = %q, want the pre-cycle commit %q", head, result.Cycles[0].HeadBefore)
+	if head := gitIn(t, dir, "rev-parse", "HEAD"); head != headBefore {
+		t.Fatalf("HEAD = %q, want the pre-cycle commit %q", head, headBefore)
 	}
 	if subject := headSubject(t, dir); strings.Contains(subject, "self-improve cycle") {
 		t.Fatalf("head subject = %q, a reverted change must not be committed", subject)
@@ -171,8 +203,8 @@ func TestRunRevertsChangeThatFailsVerification(t *testing.T) {
 
 func TestRunRevertsConflictMarkers(t *testing.T) {
 	dir := initRepo(t)
-	runner := &fakeRunner{onRun: func(workspace string) {
-		writeFile(t, workspace, "main.go",
+	runner := &fakeRunner{onRun: func(workspace string, checkpoint *agenttools.FilesystemCheckpoint) {
+		writeCheckpointed(t, workspace, checkpoint, "main.go",
 			"package main\n\n<<<<<<< HEAD\nvar a = 1\n=======\nvar a = 2\n>>>>>>> other\n")
 	}}
 
@@ -200,7 +232,7 @@ func TestRunRejectsAgentSuccessWithoutChange(t *testing.T) {
 	if result.Reverted != 1 {
 		t.Fatalf("reverted = %d, want 1 (cycles: %+v)", result.Reverted, result.Cycles)
 	}
-	if reason := result.Cycles[0].Reason; !strings.Contains(reason, "without changing any file") {
+	if reason := result.Cycles[0].Reason; !strings.Contains(reason, "No live filesystem change detected.") {
 		t.Fatalf("reason = %q, want the no-change rejection", reason)
 	}
 }
@@ -208,7 +240,8 @@ func TestRunRejectsAgentSuccessWithoutChange(t *testing.T) {
 func TestRunRejectsGitMetadataMutation(t *testing.T) {
 	dir := initRepo(t)
 	cfg := baseConfig(dir)
-	runner := &fakeRunner{onRun: func(workspace string) {
+	runner := &fakeRunner{onRun: func(workspace string, checkpoint *agenttools.FilesystemCheckpoint) {
+		_ = checkpoint
 		path := filepath.Join(workspace, ".git", "HEAD")
 		if err := os.WriteFile(path, []byte("ref: refs/heads/other\n"), 0o600); err != nil {
 			t.Fatal(err)
@@ -232,18 +265,24 @@ func TestRunRejectsGitMetadataMutation(t *testing.T) {
 	}
 }
 
-func TestRunRefusesDirtyTreeWithoutAllowDirty(t *testing.T) {
+func TestRunRestoresDirtyTreeWithoutLosingOperatorChanges(t *testing.T) {
 	dir := initRepo(t)
 	writeFile(t, dir, "main.go", "package main\n\n// uncommitted work\n")
-	runner := &fakeRunner{}
+	cfg := baseConfig(dir)
+	cfg.Verify = []string{verifyFail}
+	runner := &fakeRunner{onRun: func(workspace string, checkpoint *agenttools.FilesystemCheckpoint) {
+		writeCheckpointed(t, workspace, checkpoint, "main.go", "package main\n\n// transaction edit\n")
+	}}
 
-	if _, err := Run(context.Background(), baseConfig(dir), runner); err == nil {
-		t.Fatal("expected a dirty tree to be refused")
-	} else if !strings.Contains(err.Error(), "uncommitted changes") {
-		t.Fatalf("unexpected error: %v", err)
+	result, err := Run(context.Background(), cfg, runner)
+	if err != nil {
+		t.Fatal(err)
 	}
-	if runner.calls != 0 {
-		t.Fatalf("runner calls = %d, want 0: no cycle may run on a refused tree", runner.calls)
+	if result.Reverted != 1 || runner.calls != 1 {
+		t.Fatalf("result = %+v; runner calls = %d; want one rolled-back transaction", result, runner.calls)
+	}
+	if got := readFile(t, dir, "main.go"); got != "package main\n\n// uncommitted work\n" {
+		t.Fatalf("operator's dirty work was not restored: %q", got)
 	}
 }
 
@@ -253,8 +292,8 @@ func TestRunCheckpointsDirtyTreeWhenAllowed(t *testing.T) {
 
 	cfg := baseConfig(dir)
 	cfg.AllowDirty = true
-	runner := &fakeRunner{onRun: func(workspace string) {
-		writeFile(t, workspace, "main.go", "package main\n\n// uncommitted work\n// improvement\n")
+	runner := &fakeRunner{onRun: func(workspace string, checkpoint *agenttools.FilesystemCheckpoint) {
+		writeCheckpointed(t, workspace, checkpoint, "main.go", "package main\n\n// uncommitted work\n// improvement\n")
 	}}
 
 	result, err := Run(context.Background(), cfg, runner)
@@ -280,9 +319,9 @@ func TestRunRevertRemovesCycleFilesAndKeepsOperatorFiles(t *testing.T) {
 	cfg := baseConfig(dir)
 	cfg.AllowDirty = true
 	cfg.Verify = []string{verifyFail}
-	runner := &fakeRunner{onRun: func(workspace string) {
-		writeFile(t, workspace, "generated.go", "package main\n")
-		writeFile(t, workspace, "main.go", "package main\n\n// edited\n")
+	runner := &fakeRunner{onRun: func(workspace string, checkpoint *agenttools.FilesystemCheckpoint) {
+		writeCheckpointed(t, workspace, checkpoint, "generated.go", "package main\n")
+		writeCheckpointed(t, workspace, checkpoint, "main.go", "package main\n\n// edited\n")
 	}}
 
 	result, err := Run(context.Background(), cfg, runner)
@@ -319,9 +358,9 @@ func TestRunStopsAtTimeBudget(t *testing.T) {
 	}
 
 	var cycle int
-	runner := &fakeRunner{onRun: func(workspace string) {
+	runner := &fakeRunner{onRun: func(workspace string, checkpoint *agenttools.FilesystemCheckpoint) {
 		cycle++
-		writeFile(t, workspace, "main.go", fmt.Sprintf("package main\n\n// change %d\n", cycle))
+		writeCheckpointed(t, workspace, checkpoint, "main.go", fmt.Sprintf("package main\n\n// change %d\n", cycle))
 		// Spend the whole budget during the first cycle.
 		spent.Store(true)
 	}}
@@ -346,8 +385,8 @@ func TestRunWritesJournalEntry(t *testing.T) {
 	var journal bytes.Buffer
 	cfg := baseConfig(dir)
 	cfg.Journal = &journal
-	runner := &fakeRunner{onRun: func(workspace string) {
-		writeFile(t, workspace, "main.go", "package main\n\n// journaled\n")
+	runner := &fakeRunner{onRun: func(workspace string, checkpoint *agenttools.FilesystemCheckpoint) {
+		writeCheckpointed(t, workspace, checkpoint, "main.go", "package main\n\n// journaled\n")
 	}}
 
 	if _, err := Run(context.Background(), cfg, runner); err != nil {
@@ -396,10 +435,13 @@ func TestTouchesGitInternals(t *testing.T) {
 
 func TestBuildTaskStatesTheRules(t *testing.T) {
 	edit := buildTask("research X", []string{"go build ./..."}, false)
-	for _, want := range []string{"web_search", "web_fetch", "conflict marker", "go build ./...", "smallest change"} {
+	for _, want := range []string{"web_search", "web_fetch", "conflict marker", "go build ./...", "smallest coherent change", "do not stop after the first successful edit", "after all edits"} {
 		if !strings.Contains(edit, want) {
 			t.Fatalf("task is missing %q:\n%s", want, edit)
 		}
+	}
+	if strings.Contains(edit, "never delete a file you did not create") {
+		t.Fatalf("task must permit requested file deletions:\n%s", edit)
 	}
 
 	research := buildTask("research X", []string{"go build ./..."}, true)

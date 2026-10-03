@@ -37,8 +37,18 @@ func (w *Workspace) WriteFile(path, content string) (string, error) {
 		}
 		mode = info.Mode().Perm()
 	}
+	if err := w.beforeMutation(resolved); err != nil {
+		return "", err
+	}
 	if err := writeFileAtomic(resolved, content, mode); err != nil {
 		return "", err
+	}
+	written, err := os.ReadFile(resolved)
+	if err != nil {
+		return "", fmt.Errorf("verify written file %q: %w", path, err)
+	}
+	if string(written) != content {
+		return "", fmt.Errorf("verify written file %q: on-disk content does not match requested content", path)
 	}
 	if creating {
 		return fmt.Sprintf("created %s", path), nil
