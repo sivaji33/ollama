@@ -2394,6 +2394,74 @@ func optionsForPrompt(opts *api.Options, runner llm.LlamaServer) *api.Options {
 	return opts
 }
 
+const (
+	minimumChatContextSize       = 4096
+	defaultChatGenerationReserve = 2048
+	chatContextSizeAlignment     = 256
+)
+
+var errInsufficientChatContext = errors.New("insufficient context for chat prompt")
+
+func chatContextSizeForPrompt(promptTokens, generationReserve, currentContext, modelContext int) (int, int, error) {
+	if promptTokens < 0 || generationReserve < 0 || currentContext < 0 || modelContext < 0 {
+		return 0, 0, fmt.Errorf("context sizes cannot be negative")
+	}
+	maxInt := int(^uint(0) >> 1)
+	if promptTokens > maxInt-generationReserve {
+		return 0, 0, fmt.Errorf("prompt and generation reserve exceed the supported context size")
+	}
+
+	required := promptTokens + generationReserve
+	if modelContext > 0 && required > modelContext {
+		return 0, required, fmt.Errorf("%w: prompt requires %d tokens plus %d generation tokens, but the model supports at most %d",
+			errInsufficientChatContext, promptTokens, generationReserve, modelContext)
+	}
+
+	target := max(minimumChatContextSize, required, currentContext)
+	if modelContext > 0 && target > modelContext {
+		target = modelContext
+	}
+	if target%chatContextSizeAlignment != 0 {
+		if target > maxInt-(chatContextSizeAlignment-target%chatContextSizeAlignment) {
+			return 0, required, fmt.Errorf("context size exceeds the supported range")
+		}
+		target += chatContextSizeAlignment - target%chatContextSizeAlignment
+	}
+	if modelContext > 0 && target > modelContext {
+		target = modelContext
+	}
+	if target < required {
+		return 0, required, fmt.Errorf("%w: prompt requires %d tokens plus %d generation tokens, but the model context limit is %d",
+			errInsufficientChatContext, promptTokens, generationReserve, modelContext)
+	}
+
+	return target, required, nil
+}
+
+func chatGenerationReserve(opts *api.Options) int {
+	if opts != nil && opts.NumPredict > 0 {
+		return opts.NumPredict
+	}
+	return defaultChatGenerationReserve
+}
+
+func nativeChatPromptTokenCount(ctx context.Context, m *Model, r llm.LlamaServer, req llm.ChatRequest) (int, error) {
+	prompt, err := r.ApplyChatTemplate(ctx, req)
+	if err != nil {
+		return 0, err
+	}
+	tokens, err := r.Tokenize(ctx, prompt)
+	if err != nil {
+		return 0, err
+	}
+
+	count := len(tokens)
+	if m != nil && m.ProjectorPaths != nil {
+		count += 768 * countChatImages(req.Messages)
+	}
+	return count, nil
+}
+
 type chatExecutionMode int
 
 const (
@@ -2678,7 +2746,28 @@ func (s *Server) ChatHandler(c *gin.Context) {
 		}
 	}
 
-	r, m, opts, err := s.scheduleRunner(c.Request.Context(), m, caps, req.Options, req.KeepAlive, req.Shift)
+	if shouldUseHarmony(m) {
+		// harmony's Reasoning field only understands low/medium/high; map "max" to "high"
+		if req.Think != nil {
+			if s, ok := req.Think.Value.(string); ok && s == "max" {
+				req.Think.Value = "high"
+			}
+		}
+		if m.Config.Parser == "" {
+			m.Config.Parser = "harmony"
+		}
+	}
+
+	nativeChat := chatModeForModel(m) == chatExecutionModeNative
+	runnerCtx := c.Request.Context()
+	releaseRunner := func() {}
+	if nativeChat {
+		// Native chat may need to release this runner before scheduling a larger-context replacement.
+		runnerCtx, releaseRunner = context.WithCancel(runnerCtx)
+	}
+	defer releaseRunner()
+
+	r, m, opts, err := s.scheduleRunner(runnerCtx, m, caps, req.Options, req.KeepAlive, req.Shift)
 	if errors.Is(err, errCapabilityCompletion) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("%q does not support chat", req.Model)})
 		return
@@ -2706,20 +2795,8 @@ func (s *Server) ChatHandler(c *gin.Context) {
 	}
 	msgs = filterThinkTags(msgs, m)
 
-	if shouldUseHarmony(m) {
-		// harmony's Reasoning field only understands low/medium/high; map "max" to "high"
-		if req.Think != nil {
-			if s, ok := req.Think.Value.(string); ok && s == "max" {
-				req.Think.Value = "high"
-			}
-		}
-		if m.Config.Parser == "" {
-			m.Config.Parser = "harmony"
-		}
-	}
-
-	if chatModeForModel(m) == chatExecutionModeNative {
-		s.handleNativeChat(c, req, m, r, opts, msgs, checkpointStart, checkpointLoaded)
+	if nativeChat {
+		s.handleNativeChat(c, req, m, r, opts, msgs, checkpointStart, checkpointLoaded, releaseRunner)
 		return
 	}
 
@@ -3012,7 +3089,80 @@ func prepareNativeChatRequest(ctx context.Context, m *Model, r llm.LlamaServer, 
 	return nativeReq, err
 }
 
-func (s *Server) handleNativeChat(c *gin.Context, req api.ChatRequest, m *Model, r llm.LlamaServer, opts *api.Options, msgs []api.Message, checkpointStart, checkpointLoaded time.Time) {
+func (s *Server) ensureNativeChatContext(c *gin.Context, req api.ChatRequest, m *Model, r llm.LlamaServer, opts *api.Options, nativeReq llm.ChatRequest, truncate bool, releaseInitialRunner func()) (llm.LlamaServer, *Model, *api.Options, llm.ChatRequest, error) {
+	if truncate {
+		return r, m, opts, nativeReq, nil
+	}
+
+	ctx := c.Request.Context()
+	promptTokens, err := nativeChatPromptTokenCount(ctx, m, r, nativeReq)
+	if err != nil {
+		return r, m, opts, nativeReq, err
+	}
+	reserve := chatGenerationReserve(opts)
+	targetContext, requiredContext, err := chatContextSizeForPrompt(promptTokens, reserve, r.ContextLength(), m.Config.ContextLen)
+	if err != nil {
+		return r, m, opts, nativeReq, err
+	}
+	if requiredContext <= r.ContextLength() {
+		return r, m, opts, nativeReq, nil
+	}
+
+	slog.Info("resizing runner to fit complete chat prompt",
+		"model", req.Model,
+		"prompt_tokens", promptTokens,
+		"generation_reserve", reserve,
+		"current_context", r.ContextLength(),
+		"requested_context", targetContext)
+
+	requestOptions := make(map[string]any, len(req.Options)+1)
+	for key, value := range req.Options {
+		requestOptions[key] = value
+	}
+	requestOptions["num_ctx"] = int64(targetContext)
+	releaseInitialRunner()
+
+	capabilities := []model.Capability{model.CapabilityCompletion}
+	if len(req.Tools) > 0 {
+		capabilities = append(capabilities, model.CapabilityTools)
+	}
+	if slices.Contains(m.Capabilities(), model.CapabilityThinking) {
+		capabilities = append(capabilities, model.CapabilityThinking)
+	}
+	nextRunner, nextModel, nextOptions, err := s.scheduleRunner(ctx, m, capabilities, requestOptions, req.KeepAlive, req.Shift)
+	if err != nil {
+		return r, m, opts, nativeReq, err
+	}
+	nextOptions = optionsForPrompt(nextOptions, nextRunner)
+	nativeReq.Options = nextOptions
+	nativeReq, err = prepareNativeChatRequest(ctx, nextModel, nextRunner, nextOptions, nativeReq, false)
+	if err != nil {
+		return nextRunner, nextModel, nextOptions, nativeReq, err
+	}
+
+	promptTokens, err = nativeChatPromptTokenCount(ctx, nextModel, nextRunner, nativeReq)
+	if err != nil {
+		return nextRunner, nextModel, nextOptions, nativeReq, err
+	}
+	_, requiredContext, err = chatContextSizeForPrompt(promptTokens, reserve, nextRunner.ContextLength(), nextModel.Config.ContextLen)
+	if err != nil {
+		return nextRunner, nextModel, nextOptions, nativeReq, err
+	}
+	if requiredContext > nextRunner.ContextLength() {
+		err := fmt.Errorf("%w: prompt requires %d tokens plus %d generation tokens, but available context is %d; reduce memory use or select a model with a larger safe context",
+			errInsufficientChatContext, promptTokens, reserve, nextRunner.ContextLength())
+		slog.Warn("safe context cannot fit complete chat prompt",
+			"model", req.Model,
+			"prompt_tokens", promptTokens,
+			"generation_reserve", reserve,
+			"available_context", nextRunner.ContextLength())
+		return nextRunner, nextModel, nextOptions, nativeReq, err
+	}
+
+	return nextRunner, nextModel, nextOptions, nativeReq, nil
+}
+
+func (s *Server) handleNativeChat(c *gin.Context, req api.ChatRequest, m *Model, r llm.LlamaServer, opts *api.Options, msgs []api.Message, checkpointStart, checkpointLoaded time.Time, releaseInitialRunner func()) {
 	truncate := req.Truncate == nil || *req.Truncate
 	nativeReq, err := prepareNativeChatRequest(c.Request.Context(), m, r, opts, llm.ChatRequest{
 		Messages:    msgs,
@@ -3032,6 +3182,16 @@ func (s *Server) handleNativeChat(c *gin.Context, req api.ChatRequest, m *Model,
 		} else {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		}
+		return
+	}
+
+	r, m, opts, nativeReq, err = s.ensureNativeChatContext(c, req, m, r, opts, nativeReq, truncate, releaseInitialRunner)
+	if err != nil {
+		status := http.StatusInternalServerError
+		if errors.Is(err, errInsufficientChatContext) {
+			status = http.StatusBadRequest
+		}
+		c.JSON(status, gin.H{"error": err.Error()})
 		return
 	}
 

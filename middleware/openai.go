@@ -1198,6 +1198,8 @@ func ResponsesMiddleware() gin.HandlerFunc {
 
 		// Pass streaming preference to the underlying chat request
 		chatReq.Stream = &streamRequested
+		preserveHistory := false
+		chatReq.Truncate = &preserveHistory
 
 		var b bytes.Buffer
 		if err := json.NewEncoder(&b).Encode(chatReq); err != nil {

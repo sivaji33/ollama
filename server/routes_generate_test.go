@@ -134,6 +134,68 @@ func TestOptionsForPromptLeavesLargerRunnerContext(t *testing.T) {
 	}
 }
 
+func TestChatContextSizeForPrompt(t *testing.T) {
+	tests := []struct {
+		name              string
+		promptTokens      int
+		generationReserve int
+		currentContext    int
+		modelContext      int
+		wantTarget        int
+		wantRequired      int
+		wantErr           bool
+	}{
+		{
+			name:              "1654-token prompt gets comfortable context",
+			promptTokens:      1654,
+			generationReserve: defaultChatGenerationReserve,
+			currentContext:    1024,
+			modelContext:      262144,
+			wantTarget:        4096,
+			wantRequired:      1654 + defaultChatGenerationReserve,
+		},
+		{
+			name:              "larger future prompt grows context",
+			promptTokens:      5000,
+			generationReserve: 1024,
+			currentContext:    4096,
+			modelContext:      262144,
+			wantTarget:        6144,
+			wantRequired:      6024,
+		},
+		{
+			name:              "keep current larger context",
+			promptTokens:      1654,
+			generationReserve: 1024,
+			currentContext:    8192,
+			modelContext:      262144,
+			wantTarget:        8192,
+			wantRequired:      2678,
+		},
+		{
+			name:              "reject model context too small",
+			promptTokens:      1654,
+			generationReserve: 1024,
+			currentContext:    1024,
+			modelContext:      2048,
+			wantRequired:      2678,
+			wantErr:           true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			gotTarget, gotRequired, err := chatContextSizeForPrompt(tt.promptTokens, tt.generationReserve, tt.currentContext, tt.modelContext)
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("chatContextSizeForPrompt() error = %v, wantErr %v", err, tt.wantErr)
+			}
+			if gotTarget != tt.wantTarget || gotRequired != tt.wantRequired {
+				t.Fatalf("chatContextSizeForPrompt() = (%d, %d), want (%d, %d)", gotTarget, gotRequired, tt.wantTarget, tt.wantRequired)
+			}
+		})
+	}
+}
+
 func newMockServer(mock *mockRunner) func(ml.SystemInfo, []ml.DeviceInfo, string, *ggml.GGML, []string, []string, api.Options, int, llm.LlamaServerConfig) (llm.LlamaServer, error) {
 	return func(_ ml.SystemInfo, _ []ml.DeviceInfo, _ string, _ *ggml.GGML, _, _ []string, _ api.Options, _ int, _ llm.LlamaServerConfig) (llm.LlamaServer, error) {
 		return mock, nil

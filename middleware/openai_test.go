@@ -1798,6 +1798,9 @@ func TestResponsesMiddlewareZstd(t *testing.T) {
 			if capturedRequest.Model != tt.wantModel {
 				t.Fatalf("expected model %q, got %q", tt.wantModel, capturedRequest.Model)
 			}
+			if capturedRequest.Truncate == nil || *capturedRequest.Truncate {
+				t.Fatal("Responses requests must preserve the complete input history")
+			}
 			if len(capturedRequest.Messages) != 1 || capturedRequest.Messages[0].Content != tt.wantMessage {
 				t.Fatalf("expected single user message %q, got %+v", tt.wantMessage, capturedRequest.Messages)
 			}
