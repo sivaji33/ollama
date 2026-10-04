@@ -52,6 +52,69 @@ func memorySafeContext(systemInfo ml.SystemInfo, kv ggml.KV, requestedCtx, numPa
 	return ctx, reserved, budget, bytesPerToken, nil
 }
 
+// kvCacheFallbackTypes lists the KV-cache quantization types OwnBot may select
+// automatically when the configured type cannot serve the requested context
+// inside the memory-safe budget. Entries are ordered by descending precision so
+// ties keep the higher-quality cache.
+var kvCacheFallbackTypes = []string{"q8_0", "q4_0"}
+
+// contextWithKvCacheFallback chooses the KV-cache quantization type that serves
+// the largest context within the memory-safe budget. The configured type is
+// always tried first; when allowFallback is set, progressively smaller cache
+// element types are considered so an explicitly requested context can still be
+// served on machines where the default f16 cache would force a drastic context
+// reduction. A candidate only wins when it strictly increases the context.
+func contextWithKvCacheFallback(systemInfo ml.SystemInfo, kv ggml.KV, requestedCtx, numParallel int, configuredType string, allowFallback bool) (ctx int, kvType string, reserved, budget, bytesPerToken uint64, err error) {
+	configured := strings.ToLower(strings.TrimSpace(configuredType))
+	candidates := []string{configured}
+	if allowFallback {
+		for _, candidate := range kvCacheFallbackTypes {
+			if candidate == configured {
+				continue
+			}
+			smaller, sizeErr := kvCacheElementIsSmaller(candidate, configured)
+			if sizeErr != nil || !smaller {
+				continue
+			}
+			candidates = append(candidates, candidate)
+		}
+	}
+
+	bestCtx := 0
+	bestType := configured
+	for _, candidate := range candidates {
+		candidateCtx, candidateReserved, candidateBudget, candidateBytes, candidateErr := memorySafeContext(systemInfo, kv, requestedCtx, numParallel, candidate)
+		if candidateErr != nil {
+			if candidate == configured {
+				return 0, "", 0, 0, 0, candidateErr
+			}
+			continue
+		}
+		if candidateCtx > bestCtx {
+			bestCtx, bestType = candidateCtx, candidate
+			reserved, budget, bytesPerToken = candidateReserved, candidateBudget, candidateBytes
+		}
+	}
+	if bestCtx == 0 {
+		return 0, "", 0, 0, 0, fmt.Errorf("no KV-cache type fits the available system memory")
+	}
+	return bestCtx, bestType, reserved, budget, bytesPerToken, nil
+}
+
+// kvCacheElementIsSmaller reports whether candidate stores fewer bytes per
+// cache element than reference, using integer arithmetic to avoid rounding.
+func kvCacheElementIsSmaller(candidate, reference string) (bool, error) {
+	candidateBytes, candidateElements, err := kvCacheElementLayout(candidate)
+	if err != nil {
+		return false, err
+	}
+	referenceBytes, referenceElements, err := kvCacheElementLayout(reference)
+	if err != nil {
+		return false, err
+	}
+	return candidateBytes*referenceElements < referenceBytes*candidateElements, nil
+}
+
 func kvCacheBytesPerToken(kv ggml.KV, cacheType string) (uint64, error) {
 	blockCount := uint64(kv.BlockCount())
 	headsPerLayer := kv.HeadCountKV()

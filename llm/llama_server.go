@@ -156,6 +156,11 @@ type llamaServerRunner struct {
 
 	systemMemoryHeadroom uint64
 	kvCacheBytesPerToken uint64
+	// configuredKvCacheType is the operator's OLLAMA_KV_CACHE_TYPE. When the
+	// memory-safe context fit quantizes the KV cache automatically and
+	// llama-server rejects that cache, the load retries with this type and a
+	// context recalculated for it.
+	configuredKvCacheType string
 
 	ggml          *ggml.GGML
 	totalLayers   uint64 // maximum offloadable model layers
@@ -959,20 +964,21 @@ func NewLlamaServerRunner(
 	}
 
 	s := &llamaServerRunner{
-		client:           newLlamaServerHTTPClient(),
-		status:           status,
-		options:          opts,
-		modelPath:        modelPath,
-		mediaMarker:      mediaMarker,
-		vramByDevice:     make(map[string]uint64),
-		systemFreeAtLoad: make(map[string]uint64),
-		gpus:             gpus,
-		ggml:             f,
-		totalLayers:      f.KV().BlockCount() + 1,
-		rawEmbeddings:    legacyEmbeddingsWereRaw(f.KV()),
-		sem:              semaphore.NewWeighted(int64(numParallel)),
-		launch:           launch,
-		output:           memWriter,
+		client:                newLlamaServerHTTPClient(),
+		status:                status,
+		options:               opts,
+		modelPath:             modelPath,
+		mediaMarker:           mediaMarker,
+		vramByDevice:          make(map[string]uint64),
+		systemFreeAtLoad:      make(map[string]uint64),
+		gpus:                  gpus,
+		ggml:                  f,
+		totalLayers:           f.KV().BlockCount() + 1,
+		rawEmbeddings:         legacyEmbeddingsWereRaw(f.KV()),
+		sem:                   semaphore.NewWeighted(int64(numParallel)),
+		launch:                launch,
+		output:                memWriter,
+		configuredKvCacheType: strings.ToLower(envconfig.KvCacheType()),
 	}
 	// Point the memory parsing writer at this runner so values are updated as logs stream in
 	memWriter.runner = s
@@ -1067,6 +1073,12 @@ func (s *llamaServerRunner) Load(ctx context.Context, systemInfo ml.SystemInfo, 
 				return nil, retryErr
 			}
 			if !retried {
+				retried, retryErr = s.retryWithConfiguredKvCache(err, systemInfo)
+				if retryErr != nil {
+					return nil, retryErr
+				}
+			}
+			if !retried {
 				retried, retryErr = s.retryWithSmallerContext(err, systemInfo)
 				if retryErr != nil {
 					return nil, retryErr
@@ -1128,6 +1140,74 @@ func (s *llamaServerRunner) retryWithSmallerContext(loadErr error, systemInfo ml
 		"system_available_memory", systemInfo.FreeMemory,
 	)
 	return true, s.restartWithContext(loadErr, nextContext)
+}
+
+// isKvCacheLoadFailure reports whether llama-server refused to start because of
+// the KV-cache configuration (for example a quantized V cache without flash
+// attention) rather than memory pressure or another load problem.
+func isKvCacheLoadFailure(err error) bool {
+	if err == nil {
+		return false
+	}
+	message := strings.ToLower(err.Error())
+	if !strings.Contains(message, "cache") {
+		return false
+	}
+	for _, marker := range []string{"flash", "quantiz", "cache-type", "cache_type", "type-k", "type-v"} {
+		if strings.Contains(message, marker) {
+			return true
+		}
+	}
+	return false
+}
+
+// retryWithConfiguredKvCache restores the operator's KV-cache type when the
+// memory-safe context fit selected a quantized cache that llama-server cannot
+// load. The context is recalculated for the configured type so the retry stays
+// inside the memory-safe budget.
+func (s *llamaServerRunner) retryWithConfiguredKvCache(loadErr error, systemInfo ml.SystemInfo) (bool, error) {
+	if !isKvCacheLoadFailure(loadErr) {
+		return false, nil
+	}
+
+	configured := strings.ToLower(strings.TrimSpace(envconfig.KvCacheType()))
+	if strings.ToLower(strings.TrimSpace(s.launch.kvCacheType)) == configured {
+		return false, nil
+	}
+
+	nextContext := s.launch.opts.NumCtx
+	var bytesPerToken uint64
+	if s.ggml != nil {
+		if ctx, _, _, bpt, err := memorySafeContext(systemInfo, s.ggml.KV(), s.launch.opts.NumCtx, s.launch.numParallel, configured); err == nil {
+			nextContext = ctx
+			bytesPerToken = bpt
+		}
+	}
+
+	slog.Warn("llama-server rejected the quantized KV cache; retrying with the configured cache type",
+		"model", s.modelPath,
+		"previous_kv_cache_type", s.launch.kvCacheType,
+		"kv_cache_type", configured,
+		"previous_num_ctx", s.launch.opts.NumCtx,
+		"num_ctx", nextContext,
+		"parallel", s.launch.numParallel,
+		"error", loadErr,
+	)
+
+	if err := s.stopProcess(); err != nil {
+		return false, fmt.Errorf("llama-server load failed with a quantized KV cache: %w; error stopping failed process: %v", loadErr, err)
+	}
+	s.launch.kvCacheType = configured
+	s.launch.opts.NumCtx = nextContext
+	s.options.NumCtx = nextContext
+	if bytesPerToken > 0 {
+		s.kvCacheBytesPerToken = bytesPerToken
+	}
+	s.resetLoadAccounting()
+	if err := s.startProcess(); err != nil {
+		return false, fmt.Errorf("llama-server load failed with a quantized KV cache: %w; error starting configured-KV retry: %v", loadErr, err)
+	}
+	return true, nil
 }
 
 func (s *llamaServerRunner) retryForSystemMemoryHeadroom() (bool, error) {

@@ -116,18 +116,38 @@ func NewLlamaServer(systemInfo ml.SystemInfo, gpus []ml.DeviceInfo, modelPath st
 		opts.NumCtx = int(trainCtx)
 	}
 
+	kvct := strings.ToLower(envconfig.KvCacheType())
+
 	var systemMemoryHeadroom, cacheBytesPerToken uint64
 	if runtime.GOOS == "windows" && systemInfo.FreeMemory > 0 && (len(gpus) == 0 || allIntegratedGPUs(gpus)) {
-		ctx, reserve, budget, bytesPerToken, err := memorySafeContext(systemInfo, f.KV(), opts.NumCtx, numParallel, envconfig.KvCacheType())
+		// Only quantize automatically when the operator did not pin a cache type
+		// and the backend may run flash attention (required for quantized V).
+		allowKvFallback := envconfig.Var("OLLAMA_KV_CACHE_TYPE") == "" &&
+			LlamaServerFlashAttention(gpus) != ml.FlashAttentionDisabled
+		ctx, effectiveKvct, reserve, budget, bytesPerToken, err := contextWithKvCacheFallback(systemInfo, f.KV(), opts.NumCtx, numParallel, kvct, allowKvFallback)
 		if err != nil {
 			return nil, err
 		}
 		systemMemoryHeadroom = memoryHeadroomTarget(systemInfo.TotalMemory, systemInfo.FreeMemory)
 		cacheBytesPerToken = bytesPerToken
+		if effectiveKvct != kvct {
+			slog.Warn("quantizing KV cache to serve a larger context within available system memory",
+				"previous_kv_cache_type", kvct,
+				"kv_cache_type", effectiveKvct,
+				"requested_num_ctx", opts.NumCtx,
+				"num_ctx", ctx,
+				"parallel", numParallel,
+				"system_available_memory", systemInfo.FreeMemory,
+				"kv_cache_budget", budget,
+				"kv_cache_bytes_per_token", bytesPerToken,
+			)
+			kvct = effectiveKvct
+		}
 		if ctx < opts.NumCtx {
 			slog.Warn("reducing model context to fit available system memory",
 				"requested_num_ctx", opts.NumCtx,
 				"num_ctx", ctx,
+				"kv_cache_type", kvct,
 				"parallel", numParallel,
 				"system_available_memory", systemInfo.FreeMemory,
 				"system_reserved_memory", reserve,
@@ -138,6 +158,7 @@ func NewLlamaServer(systemInfo ml.SystemInfo, gpus []ml.DeviceInfo, modelPath st
 		} else {
 			slog.Info("model context fits available system memory",
 				"num_ctx", ctx,
+				"kv_cache_type", kvct,
 				"parallel", numParallel,
 				"system_available_memory", systemInfo.FreeMemory,
 				"system_reserved_memory", reserve,
@@ -147,7 +168,6 @@ func NewLlamaServer(systemInfo ml.SystemInfo, gpus []ml.DeviceInfo, modelPath st
 		}
 	}
 
-	kvct := strings.ToLower(envconfig.KvCacheType())
 	runner, err := NewLlamaServerRunner(gpus, modelPath, f, adapters, projectors, opts, numParallel, kvct, config)
 	if err != nil {
 		return nil, err
