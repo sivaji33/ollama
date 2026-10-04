@@ -8,11 +8,13 @@ To resolve the error:
 
 1. **Start the Ollama Service**
    - Navigate to the directory: `D:\ownbot\ollama-codex-runtime\bin\`
-   - Run the following command in your terminal:
-     ```bash
+   - In PowerShell, set a context size suitable for Codex requests before starting the runtime:
+     ```powershell
+     $env:OLLAMA_CONTEXT_LENGTH = "4096"
      ollama.exe serve
      ```
    - This starts the Ollama server on `http://127.0.0.1:11435`.
+   - If the runtime is already running, stop and restart it after setting this variable.
 
 2. **Install the `qwen3:4b-instruct` Model**
    - Run the following command in your terminal:

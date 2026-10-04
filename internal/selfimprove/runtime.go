@@ -23,6 +23,7 @@ const (
 	CustomRuntimeExecutable = `D:\ownbot\ollama-codex-runtime\bin\ollama.exe`
 	CustomRuntimeEndpoint   = "http://127.0.0.1:11435"
 	CustomRuntimeModel      = "qwen3:4b-instruct"
+	customRuntimeMinContext = 4096
 	runtimeStartupTimeout   = 30 * time.Second
 )
 
@@ -150,8 +151,9 @@ func VerifyCustomRuntime(ctx context.Context) (*api.Client, RuntimeDiagnostic, e
 	err = client.Chat(inferenceCtx, &api.ChatRequest{
 		Model: CustomRuntimeModel,
 		Messages: []api.Message{{
-			Role:    "user",
-			Content: "Reply with exactly: ownbot self-development runtime verified.",
+			Role: "user",
+			Content: "Reply with exactly: ownbot self-development runtime verified.\n\n" +
+				strings.Repeat("context verification ", 1000),
 		}},
 		Stream: &stream,
 	}, func(part api.ChatResponse) error {
@@ -253,13 +255,31 @@ func startConfiguredRuntime(ctx context.Context) (listenerProcess, error) {
 }
 
 func runtimeEnvironment(current []string) []string {
-	env := make([]string, 0, len(current)+1)
+	env := make([]string, 0, len(current)+2)
+	contextLength := 0
 	for _, entry := range current {
-		if !strings.HasPrefix(strings.ToUpper(entry), "OLLAMA_HOST=") {
+		name, value, ok := strings.Cut(entry, "=")
+		if !ok {
 			env = append(env, entry)
+			continue
 		}
+		switch {
+		case strings.EqualFold(name, "OLLAMA_HOST"):
+			continue
+		case strings.EqualFold(name, "OLLAMA_CONTEXT_LENGTH"):
+			contextLength, _ = strconv.Atoi(strings.TrimSpace(value))
+			continue
+		}
+		env = append(env, entry)
 	}
-	return append(env, "OLLAMA_HOST=127.0.0.1:11435")
+	if contextLength < customRuntimeMinContext {
+		contextLength = customRuntimeMinContext
+	}
+	env = append(env,
+		"OLLAMA_HOST=127.0.0.1:11435",
+		fmt.Sprintf("OLLAMA_CONTEXT_LENGTH=%d", contextLength),
+	)
+	return env
 }
 
 func sameExecutable(actual, configured string) bool {
