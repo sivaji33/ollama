@@ -279,7 +279,10 @@ func runParallelChatWithHistory(t *testing.T, modelName string) {
 				// so we allow a much longer initial timeout
 				assistant := DoChat(ctx, t, client, req[k], resp[k], initialTimeout, streamTimeout)
 				if assistant == nil {
-					t.Fatalf("didn't get an assistant response for context")
+					// Fatal from this goroutine would be reported against the
+					// wrong frame; record the failure and stop this worker.
+					t.Errorf("didn't get an assistant response for context")
+					return
 				}
 				req[k].Messages = append(req[k].Messages,
 					*assistant,

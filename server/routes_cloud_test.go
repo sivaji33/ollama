@@ -806,6 +806,11 @@ func TestExplicitCloudPassthroughAPIAndV1(t *testing.T) {
 	})
 }
 
+// TestCloudResponsesWebSearchUsesLocalOrchestration verifies that cloud-model
+// Responses requests with a web_search tool keep the orchestration loop local:
+// inference stays proxied to the cloud upstream, while the search itself is
+// answered by OwnBot's own keyless internet search (this fork never proxies
+// web search to an Ollama service).
 func TestCloudResponsesWebSearchUsesLocalOrchestration(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	setTestHome(t, t.TempDir())
@@ -824,6 +829,8 @@ func TestCloudResponsesWebSearchUsesLocalOrchestration(t *testing.T) {
 			}
 			_, _ = io.WriteString(w, `{"message":{"role":"assistant","content":"Ollama [release](https://ollama.com/release)."},"done":true,"prompt_eval_count":20,"prompt_eval_cached_count":17,"eval_count":6}`)
 		case "/api/web_search":
+			// The cloud web search proxy must stay unused: this fork answers
+			// searches from its own keyless search backend.
 			searchCalls++
 			w.Header().Set("Content-Type", "application/json")
 			_, _ = io.WriteString(w, `{"results":[{"title":"Ollama release","url":"https://ollama.com/release","content":"current release"}]}`)
@@ -832,6 +839,20 @@ func TestCloudResponsesWebSearchUsesLocalOrchestration(t *testing.T) {
 		}
 	}))
 	defer upstream.Close()
+
+	// Stub the local keyless search backend that the experimental web search
+	// endpoint uses, so the search leg stays local and deterministic.
+	localSearchCalls := 0
+	searchBackend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		localSearchCalls++
+		if got := r.PostFormValue("q"); got != "latest Ollama release" {
+			t.Errorf("local search query = %q, want %q", got, "latest Ollama release")
+		}
+		w.Header().Set("Content-Type", "text/html")
+		_, _ = io.WriteString(w, experimentalWebSearchFixture)
+	}))
+	defer searchBackend.Close()
+	t.Setenv("OLLAMA_WEB_SEARCH_URL", searchBackend.URL)
 
 	originalBaseURL := cloudProxyBaseURL
 	originalSignRequest := cloudProxySignRequest
@@ -872,8 +893,14 @@ func TestCloudResponsesWebSearchUsesLocalOrchestration(t *testing.T) {
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("status = %d, want 200: %s", resp.StatusCode, body)
 	}
-	if chatCalls != 2 || searchCalls != 1 {
-		t.Fatalf("chat calls = %d, search calls = %d; want 2 and 1", chatCalls, searchCalls)
+	if chatCalls != 2 {
+		t.Fatalf("chat calls = %d, want 2", chatCalls)
+	}
+	if searchCalls != 0 {
+		t.Fatalf("cloud search proxy calls = %d, want 0: search must stay local", searchCalls)
+	}
+	if localSearchCalls != 1 {
+		t.Fatalf("local search calls = %d, want 1", localSearchCalls)
 	}
 	if !bytes.Contains(body, []byte("response.web_search_call.completed")) || !bytes.Contains(body, []byte("https://ollama.com/release")) {
 		t.Fatalf("missing native web search result and citation: %s", body)

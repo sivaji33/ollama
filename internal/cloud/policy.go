@@ -7,7 +7,7 @@ import (
 const DisabledMessagePrefix = "ollama cloud is disabled"
 
 // Status returns whether cloud is disabled and the source of the decision.
-// Source is one of: "none", "env", "config", "both".
+// Source is one of: "default", "none", "env", "config", "both".
 func Status() (disabled bool, source string) {
 	return envconfig.NoCloud(), envconfig.NoCloudSource()
 }

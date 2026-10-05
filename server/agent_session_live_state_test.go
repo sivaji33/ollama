@@ -415,6 +415,11 @@ func TestAgentSessionUpdatesStateWhileRunIsActive(t *testing.T) {
 		sessionID,
 		agentpkg.SessionStateVerified,
 	)
+	// The HTTP request returns before the background finalizer finishes, so
+	// wait for its terminal event. Otherwise the still-running finalizer races
+	// the TempDir cleanup below, which fails the rename (access denied) or
+	// leaves files behind (directory not empty) on Windows.
+	waitForPersistedSessionEvent(t, store, sessionID, agentpkg.EventCompleted)
 
 	events, err := store.Events(sessionID)
 	if err != nil {

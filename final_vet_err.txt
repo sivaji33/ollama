@@ -1,0 +1,7 @@
+app\dialog\dlgs_windows.go:146:39: possible misuse of reflect.SliceHeader
+app\dialog\dlgs_windows.go:152:38: possible misuse of reflect.SliceHeader
+app\wintray\eventloop.go:161:33: possible misuse of unsafe.Pointer
+app\wintray\eventloop.go:166:29: possible misuse of unsafe.Pointer
+app\wintray\eventloop.go:170:33: possible misuse of unsafe.Pointer
+discover\native_probe_windows.go:456:41: possible misuse of unsafe.Pointer
+tokenizer\bytepairencoding_test.go:542:5: result of slices.Collect call not used

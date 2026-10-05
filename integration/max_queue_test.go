@@ -90,7 +90,10 @@ func runMaxQueue(t *testing.T) {
 			case genErr == nil:
 				successCount++
 				if len(resp.Embedding) < 5 { // somewhat arbitrary, but sufficient to be reasonable
-					t.Fatalf("embeddings shorter than expected: %d", len(resp.Embedding))
+					// Fatal from this goroutine would be reported against
+					// the wrong frame; record and stop this worker.
+					t.Errorf("embeddings shorter than expected: %d", len(resp.Embedding))
+					return
 				}
 			case errors.Is(genErr, context.Canceled):
 				canceledCount++
@@ -100,7 +103,8 @@ func runMaxQueue(t *testing.T) {
 				resetByPeerCount++
 			default:
 				if genErr != nil {
-					t.Fatalf("%d request failed", i)
+					t.Errorf("%d request failed", i)
+					return
 				}
 			}
 

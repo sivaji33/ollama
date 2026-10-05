@@ -15,7 +15,16 @@ func TestStatus(t *testing.T) {
 		source        string
 	}{
 		{
+			// This fork is local-only by default: when neither OLLAMA_NO_CLOUD
+			// nor server.json sets a value, cloud stays disabled with source
+			// "default" (see envconfig.NoCloud).
 			name:     "none",
+			disabled: true,
+			source:   "default",
+		},
+		{
+			name:     "env enables cloud",
+			envValue: "0",
 			disabled: false,
 			source:   "none",
 		},
@@ -39,10 +48,12 @@ func TestStatus(t *testing.T) {
 			source:        "both",
 		},
 		{
+			// An unparsable config is ignored, which leaves the fork's
+			// local-only default in place.
 			name:          "invalid config ignored",
 			configContent: `{invalid json`,
-			disabled:      false,
-			source:        "none",
+			disabled:      true,
+			source:        "default",
 		},
 	}
 
