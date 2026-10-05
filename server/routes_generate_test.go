@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -193,6 +194,51 @@ func TestChatContextSizeForPrompt(t *testing.T) {
 				t.Fatalf("chatContextSizeForPrompt() = (%d, %d), want (%d, %d)", gotTarget, gotRequired, tt.wantTarget, tt.wantRequired)
 			}
 		})
+	}
+}
+
+func TestEnsureNativeChatContextChecksOversizedPromptWhenTruncating(t *testing.T) {
+	t.Setenv("OLLAMA_GO_TEMPLATE", "0")
+	gin.SetMode(gin.TestMode)
+
+	mock := &mockRunner{
+		contextLength: 256,
+		TemplateFn: func(_ context.Context, req llm.ChatRequest) (string, error) {
+			return req.Messages[0].Content, nil
+		},
+	}
+	chatCalled := false
+	mock.ChatFn = func(context.Context, llm.ChatRequest, func(llm.ChatResponse)) error {
+		chatCalled = true
+		return nil
+	}
+	s := newServerWithMockRunner(t, mock)
+	createMinimalGGUFModel(t, s, "chat-context-truncate", ggml.KV{
+		"tokenizer.chat_template": "{{ messages[0]['content'] }}",
+	}, "", nil)
+
+	m, err := GetModel("chat-context-truncate")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+	c.Request = httptest.NewRequest(http.MethodPost, "/api/chat", nil)
+
+	released := false
+	_, _, _, _, err = s.ensureNativeChatContext(c, api.ChatRequest{
+		Model: "chat-context-truncate",
+	}, m, mock, &api.Options{Runner: api.Runner{NumCtx: 256}}, llm.ChatRequest{
+		Messages: []api.Message{{Role: "user", Content: strings.Repeat("token ", 300)}},
+	}, true, func() { released = true })
+	if !errors.Is(err, errInsufficientChatContext) {
+		t.Fatalf("ensureNativeChatContext() error = %v, want insufficient-context error", err)
+	}
+	if !released {
+		t.Fatal("initial runner was not released before scheduling replacement")
+	}
+	if chatCalled {
+		t.Fatal("oversized prompt reached runner generation")
 	}
 }
 

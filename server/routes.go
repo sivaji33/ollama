@@ -3090,15 +3090,21 @@ func prepareNativeChatRequest(ctx context.Context, m *Model, r llm.LlamaServer, 
 }
 
 func (s *Server) ensureNativeChatContext(c *gin.Context, req api.ChatRequest, m *Model, r llm.LlamaServer, opts *api.Options, nativeReq llm.ChatRequest, truncate bool, releaseInitialRunner func()) (llm.LlamaServer, *Model, *api.Options, llm.ChatRequest, error) {
-	if truncate {
+	if truncate && r.ContextLength() <= 0 {
 		return r, m, opts, nativeReq, nil
 	}
 
+	// Truncation can remove earlier turns, but it cannot make a single oversized
+	// message fit. Always validate the rendered prompt against the runner context.
 	ctx := c.Request.Context()
 	promptTokens, err := nativeChatPromptTokenCount(ctx, m, r, nativeReq)
 	if err != nil {
 		return r, m, opts, nativeReq, err
 	}
+	if truncate && promptTokens <= r.ContextLength() {
+		return r, m, opts, nativeReq, nil
+	}
+
 	reserve := chatGenerationReserve(opts)
 	targetContext, requiredContext, err := chatContextSizeForPrompt(promptTokens, reserve, r.ContextLength(), m.Config.ContextLen)
 	if err != nil {
