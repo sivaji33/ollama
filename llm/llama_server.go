@@ -1122,15 +1122,22 @@ func (s *llamaServerRunner) Load(ctx context.Context, systemInfo ml.SystemInfo, 
 	return deviceIDs, nil
 }
 
+// OWNBOT_CODING_CONTEXT_FLOOR_V3
+// OwnBot's dedicated Coding Agent requires enough room for repository
+// instructions, tools and generation. Runtime memory fallbacks may reduce
+// larger contexts, but must never silently operate below this floor.
+const ownbotMinimumCodingContext = 4096
+
 func (s *llamaServerRunner) retryWithSmallerContext(loadErr error, systemInfo ml.SystemInfo) (bool, error) {
-	if loadErr == nil || !IsOutOfMemory(loadErr) || s.launch.opts.NumCtx <= int(llamaContextAlignment) {
+	if loadErr == nil || !IsOutOfMemory(loadErr) || s.launch.opts.NumCtx <= ownbotMinimumCodingContext {
 		return false, nil
 	}
 
 	nextContext := s.launch.opts.NumCtx / 2
 	nextContext = nextContext / int(llamaContextAlignment) * int(llamaContextAlignment)
-	if nextContext == 0 {
-		nextContext = int(llamaContextAlignment)
+
+	if nextContext < ownbotMinimumCodingContext {
+		nextContext = ownbotMinimumCodingContext
 	}
 	slog.Warn("llama-server ran out of memory; retrying with a smaller context",
 		"model", s.modelPath,
@@ -1223,7 +1230,7 @@ func (s *llamaServerRunner) retryForSystemMemoryHeadroom() (bool, error) {
 		}
 		return false, fmt.Errorf("could not verify Windows memory headroom after llama-server startup: %w", err)
 	}
-	if s.launch.opts.NumCtx <= int(llamaContextAlignment) {
+	if s.launch.opts.NumCtx <= ownbotMinimumCodingContext {
 		if minimumContextFitsHeadroom(currentFree, s.systemMemoryHeadroom, s.kvCacheBytesPerToken, s.launch.numParallel) {
 			slog.Warn("minimum llama-server context allocation is within its measured Windows/OwnBot memory headroom",
 				"available_memory", currentFree,
@@ -1249,8 +1256,8 @@ func (s *llamaServerRunner) retryForSystemMemoryHeadroom() (bool, error) {
 	if fits {
 		return false, nil
 	}
-	if nextContext <= 0 && s.launch.opts.NumCtx > int(llamaContextAlignment) {
-		nextContext = int(llamaContextAlignment)
+	if nextContext < ownbotMinimumCodingContext {
+		nextContext = ownbotMinimumCodingContext
 	}
 	if nextContext <= 0 || nextContext >= s.launch.opts.NumCtx {
 		stopErr := s.stopProcess()

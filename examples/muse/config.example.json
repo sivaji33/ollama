@@ -1,0 +1,9 @@
+{
+  "allowed_roots": [
+    "D:\\ownbot"
+  ],
+  "workspace": "D:\\ownbot\\ollama-ownbot",
+  "state_dir": "D:\\ownbot\\.muse",
+  "download_dir": "D:\\ownbot\\.muse\\downloads",
+  "shell_timeout_secs": 300
+}

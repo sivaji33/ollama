@@ -138,6 +138,30 @@ func prepareAgentPrompt(messages []api.Message, tools api.Tools, contextLimit in
 			"action", "compact_history",
 			"final_prompt_tokens", finalTokens)
 	}
+	// OWNBOT_DYNAMIC_AGENT_OUTPUT_V1
+	//
+	// On memory-constrained systems the served context can be much smaller
+	// than the model's native context. Do not reject an otherwise valid
+	// coding turn only because of a fixed output reserve.
+	//
+	// Preserve at least 128 output tokens and a 64-token safety margin.
+	// Larger windows continue to use the normal reserve.
+	const minimumDynamicOutputTokens = 128
+	const dynamicContextSafetyMargin = 64
+
+	availableOutputTokens := contextLimit - finalTokens - dynamicContextSafetyMargin
+
+	if availableOutputTokens >= minimumDynamicOutputTokens &&
+		availableOutputTokens < reserveTokens {
+		slog.Info("[context] output reserve reduced",
+			"old_reserved_output_tokens", reserveTokens,
+			"new_reserved_output_tokens", availableOutputTokens,
+			"prompt_tokens", finalTokens,
+			"context_limit", contextLimit)
+
+		reserveTokens = availableOutputTokens
+	}
+
 	if finalTokens > promptBudget(contextLimit, reserveTokens) {
 		return nil, finalTokens, fmt.Errorf("agent prompt cannot fit safely: estimated %d prompt tokens plus %d reserved output tokens exceeds context limit %d", finalTokens, reserveTokens, contextLimit)
 	}

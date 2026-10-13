@@ -27,6 +27,9 @@ func agentTools(filesystemOnly ...bool) api.Tools {
 		tool("shell", "Run a shell command with bounded output and timeout. Commands run in the workspace and may use paths anywhere on the machine.", []string{"command"}, map[string]api.ToolProperty{"command": property("string", "Command to execute with the workspace as working directory.")}),
 		tool("git_diff", "Inspect the current workspace git diff.", nil, nil),
 		tool("web_search", "Search the internet for current knowledge, documentation, or best practices; returns citation-ready titles, URLs, and snippets.", []string{"query"}, map[string]api.ToolProperty{"query": property("string", "Search query."), "max_results": property("integer", "Optional result count, 1-10. Defaults to 5.")}),
+		tool("google_search", "Search Google via Serper and return current web result titles, URLs and snippets.", []string{"query"}, map[string]api.ToolProperty{"query": property("string", "Google search query.")}),
+		tool("github_search", "Search GitHub repositories and return repository names, descriptions, links and stars.", []string{"query"}, map[string]api.ToolProperty{"query": property("string", "GitHub repository search query.")}),
+		tool("github_repo", "Read GitHub repository metadata without modifying the repository.", []string{"query"}, map[string]api.ToolProperty{"query": property("string", "Repository in owner/repository format.")}),
 		tool("web_fetch", "Fetch an absolute http(s) URL and return its readable text for research.", []string{"url"}, map[string]api.ToolProperty{"url": property("string", "Absolute http(s) URL, usually discovered with web_search.")}),
 	}
 	if len(filesystemOnly) > 0 && filesystemOnly[0] {

@@ -26,6 +26,16 @@ const (
 	StatusFailed  Status = "failed"
 )
 
+type ToolApprovalRequest struct {
+	SessionID string         `json:"session_id"`
+	ToolName  string         `json:"tool_name"`
+	Path      string         `json:"path,omitempty"`
+	Risk      string         `json:"risk"`
+	Arguments map[string]any `json:"arguments,omitempty"`
+}
+
+type ToolApprovalFunc func(context.Context, ToolApprovalRequest) (bool, error)
+
 type RunRequest struct {
 	SessionID string `json:"session_id,omitempty"`
 	Model     string `json:"model"`
@@ -34,6 +44,9 @@ type RunRequest struct {
 	// StepOffset is server-owned session history and is never accepted from JSON.
 	StepOffset int `json:"-"`
 	// Deprecated: accepted from existing clients, but ignored by the engine.
+	EnforceApprovals bool             `json:"-"`
+	ApproveTool      ToolApprovalFunc `json:"-"`
+
 	MaxSteps             int                              `json:"max_steps,omitempty"`
 	Verify               []string                         `json:"verify,omitempty"`
 	OnLifecycleEvent     func(SessionEvent) error         `json:"-"`

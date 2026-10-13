@@ -149,14 +149,57 @@ func (e *Engine) Run(ctx context.Context, request RunRequest) (RunResult, error)
 				meaningfulEdit := false
 				if isSourceEditorTool(call.Function.Name) {
 					meaningfulEdit = callIsMeaningfulSourceEdit(workspace, call)
-					if meaningfulEdit && !repairPending && !editingStarted {
-						if err := emitLifecycleEvent(&result, request, newLifecycleEvent(EventEditingStarted, "editing started")); err != nil {
-							return result, fmt.Errorf("publish lifecycle event %q: %w", EventEditingStarted, err)
+				}
+				var observation string
+				var toolErr error
+
+				if request.EnforceApprovals && MuseToolNeedsApproval(call.Function.Name) {
+					if request.ApproveTool == nil {
+						toolErr = fmt.Errorf(
+							"owner approval required for %s",
+							call.Function.Name,
+						)
+					} else {
+						allowed, approvalErr := request.ApproveTool(
+							ctx,
+							ToolApprovalRequest{
+								SessionID: request.SessionID,
+								ToolName:  call.Function.Name,
+								Path:      toolCallPath(call),
+								Risk:      string(MuseToolRisk(call.Function.Name)),
+								Arguments: call.Function.Arguments.ToMap(),
+							},
+						)
+
+						if approvalErr != nil {
+							toolErr = fmt.Errorf(
+								"approval for %s failed: %w",
+								call.Function.Name,
+								approvalErr,
+							)
+						} else if !allowed {
+							toolErr = fmt.Errorf(
+								"owner denied %s",
+								call.Function.Name,
+							)
 						}
-						editingStarted = true
 					}
 				}
-				observation, toolErr := executeTool(ctx, workspace, call, request.FilesystemCheckpoint)
+
+				if toolErr == nil && meaningfulEdit && !repairPending && !editingStarted {
+					if err := emitLifecycleEvent(&result, request, newLifecycleEvent(EventEditingStarted, "editing started")); err != nil {
+						return result, fmt.Errorf("publish lifecycle event %q: %w", EventEditingStarted, err)
+					}
+					editingStarted = true
+				}
+				if toolErr == nil {
+					observation, toolErr = executeTool(
+						ctx,
+						workspace,
+						call,
+						request.FilesystemCheckpoint,
+					)
+				}
 				if err := ctx.Err(); err != nil {
 					result.FinalSummary = "session cancelled"
 					return result, err
@@ -822,6 +865,8 @@ func executeTool(ctx context.Context, w *agenttools.Workspace, call api.ToolCall
 	case "git_diff":
 		diff, _, err := workspaceDiff(ctx, w, checkpoint)
 		return diff, err
+	case "google_search", "github_search", "github_repo":
+		return executeMUSEResearchTool(ctx, call)
 	case "web_search":
 		query, err := stringArg(args, "query")
 		if err != nil {

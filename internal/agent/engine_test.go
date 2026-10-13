@@ -246,7 +246,7 @@ func TestAgentFirstRequestRequiresNativeToolUse(t *testing.T) {
 	if req.Truncate == nil || *req.Truncate {
 		t.Fatal("agent request must disable server-side truncation after prompt budgeting")
 	}
-	wantNames := []string{"search_files", "list_files", "read_file", "write_file", "apply_patch", "multi_edit", "delete_file", "move_file", "shell", "git_diff", "web_search", "web_fetch"}
+	wantNames := []string{"search_files", "list_files", "read_file", "write_file", "apply_patch", "multi_edit", "delete_file", "move_file", "shell", "git_diff", "web_search", "google_search", "github_search", "github_repo", "web_fetch"}
 	if len(req.Tools) != len(wantNames) {
 		t.Fatalf("tools = %d, want %d", len(req.Tools), len(wantNames))
 	}

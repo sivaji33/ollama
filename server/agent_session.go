@@ -500,6 +500,7 @@ func (s *Server) launchAgentSession(
 			}()
 		}
 
+		configureAgentApprovals(&request)
 		result, runErr := runner.Run(runContext, request)
 		if runErr != nil {
 			slog.Error(

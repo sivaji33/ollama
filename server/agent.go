@@ -34,6 +34,8 @@ func (s *Server) AgentRunHandler(c *gin.Context) {
 	if runner == nil {
 		runner = agentpkg.NewEngine(serverChatClient{server: s})
 	}
+	configureAgentApprovals(&request)
+
 	result, err := runner.Run(c.Request.Context(), request)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error(), "result": result})

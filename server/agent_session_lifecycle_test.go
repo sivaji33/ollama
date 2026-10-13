@@ -92,6 +92,43 @@ func TestAgentSessionPersistsRealEngineEditLifecycleInRelativeOrder(t *testing.T
 	if err := json.Unmarshal(recorder.Body.Bytes(), &accepted); err != nil {
 		t.Fatalf("decode accepted session: %v", err)
 	}
+	deadline := time.Now().Add(15 * time.Second)
+	approved := false
+
+	for time.Now().Before(deadline) {
+		for _, pending := range agentApprovalStore.Pending() {
+			if pending.SessionID != accepted.ID ||
+				pending.Action != agentpkg.MuseActionForTool("apply_patch") {
+				continue
+			}
+
+			before, err := os.ReadFile(filepath.Join(root, "main.go"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if string(before) != "package old\n" {
+				t.Fatalf("file changed before approval: %q", before)
+			}
+
+			if err := agentApprovalStore.Decide(pending.ID, "allow"); err != nil {
+				t.Fatalf("approve edit: %v", err)
+			}
+
+			approved = true
+			break
+		}
+
+		if approved {
+			break
+		}
+
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	if !approved {
+		t.Fatal("expected pending MUSE apply_patch approval")
+	}
+
 	waitForPersistedSessionState(
 		t,
 		store,

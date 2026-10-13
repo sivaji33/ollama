@@ -1,0 +1,35 @@
+{
+  "name": "OwnBot Muse AI Advanced",
+  "version": "1.0.0",
+  "capabilities": [
+    "planning",
+    "orchestration",
+    "approvals",
+    "risk-policy",
+    "journal",
+    "memory",
+    "filesystem",
+    "shell",
+    "process-management",
+    "public-web-fetch",
+    "download",
+    "git",
+    "checkpoint-restore",
+    "browser-driver-interface",
+    "connector-registry",
+    "verification",
+    "self-improvement-staging"
+  ],
+  "external_auth_required": [
+    "gmail",
+    "google-calendar",
+    "google-drive",
+    "github-account-actions",
+    "slack",
+    "banking",
+    "payments",
+    "authenticated-browser-sites"
+  ],
+  "download_timeout_auto_allow_seconds": 5,
+  "destructive_timeout_default": "deny"
+}
